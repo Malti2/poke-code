@@ -11,11 +11,11 @@ program
 program
   .command("tunnel")
   .description("Connect to the Poke tunnel for remote orchestration")
-  .argument("<token>", "Authentication token for tunnel.poke.com")
-  .action(async (token: string) => {
+  .argument("[token]", "Authentication token for tunnel.poke.com")
+  .action(async (token?: string) => {
     console.log("🌴 Connecting to Poke tunnel...");
-    const tunnel = new TunnelService(token);
-    await tunnel.connect();
+    const tunnel = new TunnelService();
+    await tunnel.connect(token);
   });
 
 program.parse();
