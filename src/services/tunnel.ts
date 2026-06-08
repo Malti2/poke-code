@@ -56,17 +56,20 @@ export class TunnelService {
     
     // 1. Explicitly passed token
     if (passedToken) {
+      log("🔑 Using explicitly passed token.");
       this.saveState({ ...state, token: passedToken });
       return passedToken;
     }
 
     // 2. State-stored token
     if (state.token) {
+      log("🔑 Using token from state.json.");
       return state.token;
     }
 
     // 3. Environment variable (standard pattern)
     if (process.env.POKE_API_KEY) {
+      log("🔑 Using token from POKE_API_KEY environment variable.");
       return process.env.POKE_API_KEY;
     }
 
@@ -74,6 +77,7 @@ export class TunnelService {
     if (isLoggedIn()) {
       const token = getToken();
       if (token) {
+        log("🔑 Using token from SDK login state.");
         this.saveState({ ...state, token });
         return token;
       }
@@ -82,40 +86,32 @@ export class TunnelService {
     // 5. Trigger browser login flow
     log("🔐 No authentication found. Triggering login...");
     
-    // Explicitly handle headless or non-interactive environments by printing the code clearly
-    const isHeadless = !!(process.env.POKECLAW_HEADLESS || process.env.HEADLESS || !process.stdin.isTTY);
-
+    // The SDK might be failing to detect interactivity correctly, 
+    // so we'll force onCode to run and print immediately.
     await login({
-      openBrowser: !isHeadless,
+      openBrowser: true,
       onCode: ({ userCode, loginUrl }) => {
-        console.log("\n" + "=".repeat(60));
-        console.log(" 🔑 POKE AUTHENTICATION REQUIRED");
-        console.log("=".repeat(60));
-        console.log(`\n  1. Go to: ${loginUrl}`);
-        console.log(`  2. Enter code: ${userCode}`);
-        console.log("\n" + "=".repeat(60) + "\n");
+        // This MUST print to the terminal
+        process.stdout.write("\n" + "=".repeat(60) + "\n");
+        process.stdout.write(" 🔑 POKE AUTHENTICATION REQUIRED\n");
+        process.stdout.write("=".repeat(60) + "\n");
+        process.stdout.write(`\n  1. Go to: ${loginUrl}\n`);
+        process.stdout.write(`  2. Enter code: ${userCode}\n`);
+        process.stdout.write("\n" + "=".repeat(60) + "\n\n");
         
-        if (!isHeadless) {
-          log("🌐 Opening browser...");
-        } else {
-          log("⚠️ Running in headless mode. Please use the URL above.");
-        }
+        log("🌐 Opening browser (if supported)...");
       },
     });
 
-    // The SDK's login() is async and resolves when the user finishes the flow
     const token = getToken();
     if (!token) {
-      throw new Error("Authentication failed: No token received after login.");
+      throw new Error("Authentication failed: No token received after login flow.");
     }
 
     this.saveState({ ...state, token });
     return token;
   }
 
-  /**
-   * Cleans up stale connections matching the poke-gate pattern.
-   */
   private async cleanupStaleConnections(token: string) {
     if (!token) return;
     const base = process.env.POKE_API ?? "https://poke.com/api/v1";
@@ -138,84 +134,78 @@ export class TunnelService {
           headers: { Authorization: `Bearer ${token}` },
         });
       } catch {
-        // ignore cleanup errors
+        // ignore cleanup
       }
     }
 
-    // After cleanup, we keep the token but clear the stale IDs
     this.saveState({ token: state.token });
   }
 
   async connect(passedToken?: string) {
-    const token = await this.ensureAuth(passedToken);
-    await this.cleanupStaleConnections(token);
+    try {
+      const token = await this.ensureAuth(passedToken);
+      await this.cleanupStaleConnections(token);
 
-    // In-process handling logic
-    const handleRequest = async (method: string, params: any) => {
-      switch (method) {
-        case "list_tools":
-          return {
-            tools: [
-              { name: "read_file", description: "Read content from a file" },
-              { name: "write_file", description: "Write content to a file" },
-              { name: "list_files", description: "List files in a directory" },
-              { name: "search_files", description: "Search for files by pattern" },
-              { name: "execute_bash", description: "Execute a bash command" }
-            ]
-          };
+      const handleRequest = async (method: string, params: any) => {
+        switch (method) {
+          case "list_tools":
+            return {
+              tools: [
+                { name: "read_file", description: "Read content from a file" },
+                { name: "write_file", description: "Write content to a file" },
+                { name: "list_files", description: "List files in a directory" },
+                { name: "search_files", description: "Search for files by pattern" },
+                { name: "execute_bash", description: "Execute a bash command" }
+              ]
+            };
+          case "call_tool":
+            log(`📨 Executing tool: ${params.name}`);
+            return await this.toolManager.executeTool(params.name, params.arguments);
+          case "query":
+            log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
+            const queryResults: any[] = [];
+            for await (const step of this.queryEngine.processQuery(params.prompt)) {
+              queryResults.push(step);
+            }
+            return queryResults;
+          default:
+            throw new Error(`Method ${method} not found`);
+        }
+      };
 
-        case "call_tool":
-          log(`📨 Executing tool: ${params.name}`);
-          return await this.toolManager.executeTool(params.name, params.arguments);
-
-        case "query":
-          log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
-          const queryResults: any[] = [];
-          for await (const step of this.queryEngine.processQuery(params.prompt)) {
-            queryResults.push(step);
-          }
-          return queryResults;
-
-        default:
-          throw new Error(`Method ${method} not found`);
-      }
-    };
-
-    this.tunnel = new PokeTunnel({
-      url: "local://",
-      token,
-      name: "poke-code",
-      cleanupOnStop: true,
-    });
-
-    this.tunnel.on("connected", (info) => {
-      const state = this.loadState();
-      const history = state.connectionHistory || [];
-      if (info.connectionId) history.push(info.connectionId);
-      
-      this.saveState({
-        ...state,
-        connectionId: info.connectionId,
-        connectionHistory: history.slice(-10),
+      this.tunnel = new PokeTunnel({
+        url: "local://",
+        token,
+        name: "poke-code",
+        cleanupOnStop: true,
       });
-      
-      log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
-    });
 
-    this.tunnel.on("disconnected", () => log("🔌 Tunnel disconnected. Reconnecting..."));
-    this.tunnel.on("error", (err) => log(`🚨 Tunnel error: ${err.message}`));
-    this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
+      this.tunnel.on("connected", (info) => {
+        const state = this.loadState();
+        const history = state.connectionHistory || [];
+        if (info.connectionId) history.push(info.connectionId);
+        this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
+        log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
+      });
 
-    // SDK natively supports local:// via these handlers when no HTTP server is present
-    this.tunnel.on("execute_tool", async ({ toolName, args }) => {
-      return await handleRequest("call_tool", { name: toolName, arguments: args });
-    });
+      this.tunnel.on("disconnected", () => log("🔌 Tunnel disconnected. Reconnecting..."));
+      this.tunnel.on("error", (err) => log(`🚨 Tunnel error: ${err.message}`));
+      this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
 
-    this.tunnel.on("query", async ({ prompt }) => {
-      return await handleRequest("query", { prompt });
-    });
+      this.tunnel.on("execute_tool", async ({ toolName, args }) => {
+        return await handleRequest("call_tool", { name: toolName, arguments: args });
+      });
 
-    log("🌴 Starting Poke Tunnel...");
-    await this.tunnel.start();
+      this.tunnel.on("query", async ({ prompt }) => {
+        return await handleRequest("query", { prompt });
+      });
+
+      log("🌴 Starting Poke Tunnel...");
+      await this.tunnel.start();
+    } catch (error: any) {
+      console.error("\n🚨 CRITICAL FAILURE during tunnel connection:");
+      console.error(error.message || error);
+      process.exit(1);
+    }
   }
 }
