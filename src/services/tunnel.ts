@@ -139,9 +139,9 @@ export class TunnelService {
 
     for (const id of ids) {
       try {
-        await fetch(`${base}/mcp/connections/${id}`, {
+        await fetch(\`\${base}/mcp/connections/\${id}\`, {
           method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: \`Bearer \${token}\` },
         });
       } catch {
         // ignore cleanup
@@ -159,6 +159,7 @@ export class TunnelService {
     const startTunnel = async (token: string): Promise<void> => {
       return new Promise(async (resolve, reject) => {
         let isResolved = false;
+        let isAuthFailure = false;
         
         await this.cleanupStaleConnections(token);
 
@@ -175,17 +176,17 @@ export class TunnelService {
                 ]
               };
             case "call_tool":
-              log(`📨 Executing tool: ${params.name}`);
+              log(\`📨 Executing tool: \${params.name}\`);
               return await this.toolManager.executeTool(params.name, params.arguments);
             case "query":
-              log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
+              log(\`📨 Received query: \${params.prompt.substring(0, 50)}...\`);
               const queryResults: any[] = [];
               for await (const step of this.queryEngine.processQuery(params.prompt)) {
                 queryResults.push(step);
               }
               return queryResults;
             default:
-              throw new Error(`Method ${method} not found`);
+              throw new Error(\`Method \${method} not found\`);
           }
         };
 
@@ -205,32 +206,36 @@ export class TunnelService {
           const history = state.connectionHistory || [];
           if (info.connectionId) history.push(info.connectionId);
           this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
-          log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
+          log(\`✅ Tunnel connection established. ID: \${info.connectionId}\`);
           isResolved = true;
           resolve();
         });
 
         this.tunnel.on("disconnected", () => {
+          if (isAuthFailure) return;
           log("🔌 Tunnel disconnected.");
           const duration = Date.now() - connectionStartTime;
           
-          // If we disconnect instantly (< 3s), it's likely an auth issue
-          if (!isResolved && duration < 3000 && connectionAttempts < MAX_AUTH_RETRIES) {
+          // If we disconnect instantly (< 3s) AND haven't established connection yet, it's likely an auth issue
+          if (!isResolved && duration < 3000) {
             log("⚠️ Immediate disconnect detected. Current token may be invalid.");
+            isAuthFailure = true;
             this.tunnel?.stop();
             reject(new Error("AUTH_INVALID"));
           }
         });
 
         this.tunnel.on("error", (err) => {
-          log(`🚨 Tunnel error: ${err.message}`);
+          if (isAuthFailure) return;
+          log(\`🚨 Tunnel error: \${err.message}\`);
           if (err.message.includes("401") || err.message.toLowerCase().includes("auth")) {
+            isAuthFailure = true;
             this.tunnel?.stop();
             reject(new Error("AUTH_INVALID"));
           }
         });
 
-        this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
+        this.tunnel.on("toolsSynced", ({ toolCount }) => log(\`🔄 Synced \${toolCount} tools to Poke.\`));
 
         this.tunnel.on("execute_tool", async ({ toolName, args }) => {
           return await handleRequest("call_tool", { name: toolName, arguments: args });
@@ -244,23 +249,27 @@ export class TunnelService {
         try {
           await this.tunnel.start();
         } catch (e: any) {
-          if (!isResolved) reject(e);
+          if (!isResolved && !isAuthFailure) reject(e);
         }
       });
     };
 
-    try {
-      await startTunnel(currentToken);
-    } catch (error: any) {
-      if (error.message === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
-        log("🔄 Clearing invalid token and re-authenticating...");
-        this.clearToken();
-        connectionAttempts++;
-        currentToken = await this.triggerManualLogin();
+    while (connectionAttempts <= MAX_AUTH_RETRIES) {
+      try {
         await startTunnel(currentToken);
-      } else {
-        console.error(`\n🚨 CRITICAL FAILURE: ${error.message || error}`);
-        process.exit(1);
+        // If we reach here, it connected successfully
+        break;
+      } catch (error: any) {
+        if (error.message === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
+          log("🔄 Clearing invalid token and re-authenticating...");
+          this.clearToken();
+          connectionAttempts++;
+          currentToken = await this.triggerManualLogin();
+          // The loop will continue and try to startTunnel again with the new currentToken
+        } else {
+          console.error(\`\\n🚨 CRITICAL FAILURE: \${error.message || error}\`);
+          process.exit(1);
+        }
       }
     }
   }
