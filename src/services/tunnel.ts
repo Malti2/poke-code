@@ -139,9 +139,9 @@ export class TunnelService {
 
     for (const id of ids) {
       try {
-        await fetch(\`\${base}/mcp/connections/\${id}\`, {
+        await fetch(`${base}/mcp/connections/${id}`, {
           method: "DELETE",
-          headers: { Authorization: \`Bearer \${token}\` },
+          headers: { Authorization: `Bearer ${token}` },
         });
       } catch {
         // ignore cleanup
@@ -176,17 +176,17 @@ export class TunnelService {
                 ]
               };
             case "call_tool":
-              log(\`📨 Executing tool: \${params.name}\`);
+              log(`📨 Executing tool: ${params.name}`);
               return await this.toolManager.executeTool(params.name, params.arguments);
             case "query":
-              log(\`📨 Received query: \${params.prompt.substring(0, 50)}...\`);
+              log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
               const queryResults: any[] = [];
               for await (const step of this.queryEngine.processQuery(params.prompt)) {
                 queryResults.push(step);
               }
               return queryResults;
             default:
-              throw new Error(\`Method \${method} not found\`);
+              throw new Error(`Method ${method} not found`);
           }
         };
 
@@ -206,7 +206,7 @@ export class TunnelService {
           const history = state.connectionHistory || [];
           if (info.connectionId) history.push(info.connectionId);
           this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
-          log(\`✅ Tunnel connection established. ID: \${info.connectionId}\`);
+          log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
           isResolved = true;
           resolve();
         });
@@ -227,7 +227,7 @@ export class TunnelService {
 
         this.tunnel.on("error", (err) => {
           if (isAuthFailure) return;
-          log(\`🚨 Tunnel error: \${err.message}\`);
+          log(`🚨 Tunnel error: ${err.message}`);
           if (err.message.includes("401") || err.message.toLowerCase().includes("auth")) {
             isAuthFailure = true;
             this.tunnel?.stop();
@@ -235,7 +235,7 @@ export class TunnelService {
           }
         });
 
-        this.tunnel.on("toolsSynced", ({ toolCount }) => log(\`🔄 Synced \${toolCount} tools to Poke.\`));
+        this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
 
         this.tunnel.on("execute_tool", async ({ toolName, args }) => {
           return await handleRequest("call_tool", { name: toolName, arguments: args });
@@ -267,7 +267,7 @@ export class TunnelService {
           currentToken = await this.triggerManualLogin();
           // The loop will continue and try to startTunnel again with the new currentToken
         } else {
-          console.error(\`\\n🚨 CRITICAL FAILURE: \${error.message || error}\`);
+          console.error(`\n🚨 CRITICAL FAILURE: ${error.message || error}`);
           process.exit(1);
         }
       }
