@@ -92,18 +92,14 @@ export class TunnelService {
       login({
         openBrowser: true, // Try it, but the terminal output is the fallback
         onCode: ({ userCode, loginUrl }) => {
-          // Force printing to terminal
-          const banner = `
-============================================================
- 🔑 POKE AUTHENTICATION REQUIRED
-============================================================
-
-  1. Go to: \x1b[36m${loginUrl}\x1b[0m
-  2. Enter code: \x1b[1m${userCode}\x1b[0m
-
-============================================================
-`;
-          process.stderr.write(banner); // Write to stderr to avoid redirection
+          // Force printing to terminal via console.error for unbuffered output
+          console.error("\\n============================================================");
+          console.error(" 🔑 POKE AUTHENTICATION REQUIRED");
+          console.error("============================================================");
+          console.error(\`\\n  1. Go to: \${loginUrl}\`);
+          console.error(\`  2. Enter code: \${userCode}\`);
+          console.error("\\n============================================================\\n");
+          
           log("🌐 Opening browser (if supported)...");
         },
       }).then(() => {
@@ -131,7 +127,7 @@ export class TunnelService {
 
     if (ids.size === 0) return;
 
-    log(`🧹 Cleaning up ${ids.size} old connection(s)…`);
+    log(\`🧹 Cleaning up \${ids.size} old connection(s)…\`);
 
     for (const id of ids) {
       try {
@@ -209,7 +205,7 @@ export class TunnelService {
       log("🌴 Starting Poke Tunnel...");
       await this.tunnel.start();
     } catch (error: any) {
-      process.stderr.write(\`\\n🚨 CRITICAL FAILURE during tunnel connection: \${error.message || error}\\n\`);
+      console.error(\`\\n🚨 CRITICAL FAILURE during tunnel connection: \${error.message || error}\`);
       process.exit(1);
     }
   }
