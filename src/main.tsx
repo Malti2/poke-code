@@ -12,10 +12,10 @@ program
   .command("tunnel")
   .description("Connect to the Poke tunnel for remote orchestration")
   .argument("[token]", "Authentication token for tunnel.poke.com")
-  .action(async (token?: string) => {
+  .action(async (token: string | undefined) => {
     console.log("🌴 Connecting to Poke tunnel...");
-    const tunnel = new TunnelService();
-    await tunnel.connect(token);
+    const service = new TunnelService();
+    await service.connect(token);
   });
 
-program.parse();
+program.parse(process.argv);
