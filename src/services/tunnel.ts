@@ -58,32 +58,32 @@ export class TunnelService {
   }
 
   private async triggerManualLogin(): Promise<string> {
-    log("🔐 No valid authentication found. Triggering login...");
+    log("🔐 Triggering Poke login flow...");
     
-    return new Promise<string>((resolve, reject) => {
-      login({
-        openBrowser: true,
-        onCode: ({ userCode, loginUrl }) => {
-          console.error("\n============================================================");
-          console.error(" 🔑 POKE AUTHENTICATION REQUIRED");
-          console.error("============================================================");
-          console.error(`\n  1. Go to: ${loginUrl}`);
-          console.error(`  2. Enter code: ${userCode}`);
-          console.error("\n============================================================\n");
-          
-          log("🌐 Opening browser (if supported)...");
-        },
-      }).then(() => {
-        const token = getToken();
-        if (token) {
-          const state = this.loadState();
-          this.saveState({ ...state, token });
-          resolve(token);
-        } else {
-          reject(new Error("Login completed but no token was found."));
-        }
-      }).catch(reject);
+    // login() returns a Promise that resolves when the user finishes the flow on the web.
+    // We must await it to ensure we don't proceed until the token is actually available.
+    await login({
+      openBrowser: true,
+      onCode: ({ userCode, loginUrl }) => {
+        console.error("\n============================================================");
+        console.error(" 🔑 POKE AUTHENTICATION REQUIRED");
+        console.error("============================================================");
+        console.error(`\n  1. Go to: ${loginUrl}`);
+        console.error(`  2. Enter code: ${userCode}`);
+        console.error("\n============================================================\n");
+        
+        log("🌐 Opening browser (if supported)...");
+      },
     });
+
+    const token = getToken();
+    if (token) {
+      const state = this.loadState();
+      this.saveState({ ...state, token });
+      return token;
+    } else {
+      throw new Error("Login completed but no token was found.");
+    }
   }
 
   private async ensureAuth(passedToken?: string): Promise<string> {
