@@ -8,11 +8,10 @@
   },
   "dependencies": {
     "commander": "^11.1.0",
-    "ws": "^8.16.0"
+    "poke": "latest"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/ws": "^8.5.10",
     "typescript": "^5.3.0"
   }
 }
