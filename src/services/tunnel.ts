@@ -1,16 +1,23 @@
 import { PokeTunnel, login, isLoggedIn, getToken } from "poke";
 import { ToolManager } from "../tools/ToolManager";
 import { QueryEngine } from "../QueryEngine";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
-interface Config {
+interface State {
+  connectionId?: string;
+  connectionHistory?: string[];
   token?: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "poke-code");
-const CONFIG_FILE = join(CONFIG_DIR, "state.json");
+const STATE_PATH = join(CONFIG_DIR, "state.json");
+
+function log(msg: string) {
+  const ts = new Date().toISOString().slice(11, 19);
+  console.log(`[${ts}] ${msg}`);
+}
 
 export class TunnelService {
   private queryEngine: QueryEngine;
@@ -22,48 +29,58 @@ export class TunnelService {
     this.queryEngine = new QueryEngine();
   }
 
-  private loadConfig(): Config {
+  private loadState(): State {
     try {
-      if (existsSync(CONFIG_FILE)) {
-        return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+      if (existsSync(STATE_PATH)) {
+        return JSON.parse(readFileSync(STATE_PATH, "utf-8"));
       }
     } catch (e) {
-      console.error("🚨 Error reading config:", e);
+      // ignore
     }
     return {};
   }
 
-  private saveConfig(config: Config) {
+  private saveState(state: State) {
     try {
       if (!existsSync(CONFIG_DIR)) {
         mkdirSync(CONFIG_DIR, { recursive: true });
       }
-      writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+      writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
     } catch (e) {
-      console.error("🚨 Error saving config:", e);
+      console.error("🚨 Error saving state:", e);
     }
   }
 
   private async ensureAuth(passedToken?: string): Promise<string> {
+    const state = this.loadState();
+    
+    // 1. Explicitly passed token
     if (passedToken) {
-      this.saveConfig({ token: passedToken });
+      this.saveState({ ...state, token: passedToken });
       return passedToken;
     }
 
-    const config = this.loadConfig();
-    if (config.token) {
-      return config.token;
+    // 2. State-stored token
+    if (state.token) {
+      return state.token;
     }
 
+    // 3. Environment variable (standard pattern)
+    if (process.env.POKE_API_KEY) {
+      return process.env.POKE_API_KEY;
+    }
+
+    // 4. SDK's internal login state
     if (isLoggedIn()) {
       const token = getToken();
       if (token) {
-        this.saveConfig({ token });
+        this.saveState({ ...state, token });
         return token;
       }
     }
 
-    console.log("🔐 No authentication found. Opening browser for Poke login...");
+    // 5. Trigger browser login flow
+    log("🔐 No authentication found. Opening browser for Poke login...");
     await login({
       openBrowser: true,
       onCode: ({ userCode, loginUrl }) => {
@@ -77,45 +94,50 @@ export class TunnelService {
       throw new Error("Authentication failed: No token received after login.");
     }
 
-    this.saveConfig({ token });
+    this.saveState({ ...state, token });
     return token;
   }
 
+  /**
+   * Cleans up stale connections matching the poke-gate pattern.
+   */
   private async cleanupStaleConnections(token: string) {
-    const apiBase = "https://poke.com/api/v1";
-    console.log("🧹 Cleaning up stale tunnel connections...");
-    
-    try {
-      const response = await fetch(`${apiBase}/mcp/connections`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      if (!response.ok) return;
-      
-      const data = await response.json();
-      const connections = data.connections || [];
-      
-      for (const conn of connections) {
-        if (conn.name === "poke-code") {
-          console.log(`🗑️  Removing stale connection: ${conn.id}`);
-          await fetch(`${apiBase}/mcp/connections/${conn.id}`, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${token}` }
-          });
-        }
-      }
-    } catch (error) {
-      console.warn("⚠️  Note: Could not complete stale connection cleanup.", error);
+    if (!token) return;
+    const base = process.env.POKE_API ?? "https://poke.com/api/v1";
+    const state = this.loadState();
+
+    const ids = new Set<string>();
+    if (state.connectionId) ids.add(state.connectionId);
+    if (Array.isArray(state.connectionHistory)) {
+      for (const id of state.connectionHistory) ids.add(id);
     }
+
+    if (ids.size === 0) return;
+
+    log(`🧹 Cleaning up ${ids.size} old connection(s)…`);
+
+    for (const id of ids) {
+      try {
+        await fetch(`${base}/mcp/connections/${id}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+
+    // After cleanup, we keep the token but clear the stale IDs
+    this.saveState({ token: state.token });
   }
 
   async connect(passedToken?: string) {
     const token = await this.ensureAuth(passedToken);
     await this.cleanupStaleConnections(token);
 
-    // Start a local HTTP server to satisfy the PokeTunnel's MCP requirements
+    // Local MCP server to proxy tool calls
     const server = Bun.serve({
-      port: 0, // Use any available port
+      port: 0,
       async fetch(req) {
         const url = new URL(req.url);
         if (url.pathname !== "/mcp") return new Response("Not Found", { status: 404 });
@@ -129,7 +151,6 @@ export class TunnelService {
 
             switch (method) {
               case "list_tools":
-                // Standard MCP tool discovery
                 result = {
                   tools: [
                     { name: "read_file", description: "Read content from a file" },
@@ -142,12 +163,12 @@ export class TunnelService {
                 break;
 
               case "call_tool":
-                console.log(`📨 Executing tool: ${params.name}`);
+                log(`📨 Executing tool: ${params.name}`);
                 result = await this.toolManager.executeTool(params.name, params.arguments);
                 break;
 
               case "query":
-                console.log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
+                log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
                 const queryResults: any[] = [];
                 for await (const step of this.queryEngine.processQuery(params.prompt)) {
                   queryResults.push(step);
@@ -181,29 +202,35 @@ export class TunnelService {
       }
     });
 
-    const localUrl = `http://127.0.0.1:${server.port}/mcp`;
-    console.log(`📡 Local MCP server listening at ${localUrl}`);
+    const mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
+    log(`📡 Local MCP server listening at ${mcpUrl}`);
 
     this.tunnel = new PokeTunnel({
-      url: localUrl,
+      url: mcpUrl,
       token,
       name: "poke-code",
       cleanupOnStop: true,
     });
 
     this.tunnel.on("connected", (info) => {
-      console.log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
+      const state = this.loadState();
+      const history = state.connectionHistory || [];
+      if (info.connectionId) history.push(info.connectionId);
+      
+      this.saveState({
+        ...state,
+        connectionId: info.connectionId,
+        connectionHistory: history.slice(-10),
+      });
+      
+      log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
     });
 
-    this.tunnel.on("disconnected", () => {
-      console.log("🔌 Tunnel disconnected. Reconnecting...");
-    });
+    this.tunnel.on("disconnected", () => log("🔌 Tunnel disconnected. Reconnecting..."));
+    this.tunnel.on("error", (err) => log(`🚨 Tunnel error: ${err.message}`));
+    this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
 
-    this.tunnel.on("error", (err) => {
-      console.error("🚨 Tunnel error:", err.message);
-    });
-
-    console.log("🌴 Starting Poke Tunnel...");
+    log("🌴 Starting Poke Tunnel...");
     await this.tunnel.start();
   }
 }
