@@ -1,5 +1,4 @@
-import { executeBash } from "./tools/executeBash";
-import { fileTools } from "./tools/fileTools";
+import { fileTools } from "./fileTools";
 
 export interface Thought {
   type: "thought" | "action" | "result" | "response";
