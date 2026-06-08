@@ -80,15 +80,30 @@ export class TunnelService {
     }
 
     // 5. Trigger browser login flow
-    log("🔐 No authentication found. Opening browser for Poke login...");
+    log("🔐 No authentication found. Triggering login...");
+    
+    // Explicitly handle headless or non-interactive environments by printing the code clearly
+    const isHeadless = !!(process.env.POKECLAW_HEADLESS || process.env.HEADLESS || !process.stdin.isTTY);
+
     await login({
-      openBrowser: true,
+      openBrowser: !isHeadless,
       onCode: ({ userCode, loginUrl }) => {
-        console.log(`\n  If the browser didn't open, go to: ${loginUrl}`);
-        console.log(`  And enter code: ${userCode}\n`);
+        console.log("\n" + "=".repeat(60));
+        console.log(" 🔑 POKE AUTHENTICATION REQUIRED");
+        console.log("=".repeat(60));
+        console.log(`\n  1. Go to: ${loginUrl}`);
+        console.log(`  2. Enter code: ${userCode}`);
+        console.log("\n" + "=".repeat(60) + "\n");
+        
+        if (!isHeadless) {
+          log("🌐 Opening browser...");
+        } else {
+          log("⚠️ Running in headless mode. Please use the URL above.");
+        }
       },
     });
 
+    // The SDK's login() is async and resolves when the user finishes the flow
     const token = getToken();
     if (!token) {
       throw new Error("Authentication failed: No token received after login.");
