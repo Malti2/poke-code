@@ -1,15 +1,15 @@
+import { Command } from "commander";
 import React from "react";
 import { render } from "ink";
-import { Command } from "commander";
 import { App } from "./components/App";
-import { TunnelService } from "./services/tunnel.ts";
+import { TunnelService } from "./services/tunnel";
 
 const program = new Command();
 
 program
   .name("poke-code")
-  .description("The sleekest AI code agent for your terminal")
-  .version("0.1.0");
+  .version("0.1.0")
+  .description("The sleekest AI code agent for your terminal");
 
 program
   .command("chat")
@@ -20,11 +20,12 @@ program
 
 program
   .command("tunnel")
-  .description("Connect poke-code to the Poke cloud tunnel")
-  .argument("<token>", "Your Poke auth token")
-  .action(async (token) => {
-    const tunnel = new TunnelService();
-    await tunnel.connect(token);
+  .description("Connect to the Poke tunnel for remote orchestration")
+  .argument("<token>", "Authentication token for tunnel.poke.com")
+  .action(async (token: string) => {
+    console.log("🌴 Connecting to Poke tunnel...");
+    const tunnel = new TunnelService(token);
+    await tunnel.connect();
   });
 
 program.parse();
