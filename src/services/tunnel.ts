@@ -1,6 +1,16 @@
-import { PokeTunnel } from "poke";
+import { PokeTunnel, login, isLoggedIn, getToken } from "poke";
 import { ToolManager } from "../tools/ToolManager";
 import { QueryEngine } from "../QueryEngine";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
+interface Config {
+  token?: string;
+}
+
+const CONFIG_DIR = join(homedir(), ".config", "poke-code");
+const CONFIG_FILE = join(CONFIG_DIR, "state.json");
 
 export class TunnelService {
   private queryEngine: QueryEngine;
@@ -9,19 +19,77 @@ export class TunnelService {
 
   constructor() {
     this.toolManager = new ToolManager();
-    this.queryEngine = new QueryEngine(this.toolManager);
+    this.queryEngine = new QueryEngine();
   }
 
-  /**
-   * Cleans up any potentially stale connections for this user before starting a new one.
-   * This ensures we don't hit limits or have ghost connections on the server.
-   */
+  private loadConfig(): Config {
+    try {
+      if (existsSync(CONFIG_FILE)) {
+        return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+      }
+    } catch (e) {
+      console.error("🚨 Error reading config:", e);
+    }
+    return {};
+  }
+
+  private saveConfig(config: Config) {
+    try {
+      if (!existsSync(CONFIG_DIR)) {
+        mkdirSync(CONFIG_DIR, { recursive: true });
+      }
+      writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    } catch (e) {
+      console.error("🚨 Error saving config:", e);
+    }
+  }
+
+  private async ensureAuth(passedToken?: string): Promise<string> {
+    // 1. Try passed token
+    if (passedToken) {
+      this.saveConfig({ token: passedToken });
+      return passedToken;
+    }
+
+    // 2. Try saved token
+    const config = this.loadConfig();
+    if (config.token) {
+      return config.token;
+    }
+
+    // 3. Try SDK's internal state
+    if (isLoggedIn()) {
+      const token = getToken();
+      if (token) {
+        this.saveConfig({ token });
+        return token;
+      }
+    }
+
+    // 4. Trigger browser login
+    console.log("🔐 No authentication found. Opening browser for Poke login...");
+    await login({
+      openBrowser: true,
+      onCode: ({ userCode, loginUrl }) => {
+        console.log(`\n  If the browser didn't open, go to: ${loginUrl}`);
+        console.log(`  And enter code: ${userCode}\n`);
+      },
+    });
+
+    const token = getToken();
+    if (!token) {
+      throw new Error("Authentication failed: No token received after login.");
+    }
+
+    this.saveConfig({ token });
+    return token;
+  }
+
   private async cleanupStaleConnections(token: string) {
     const apiBase = "https://poke.com/api/v1";
     console.log("🧹 Cleaning up stale tunnel connections...");
     
     try {
-      // First, fetch active connections to find ones matching our client name
       const response = await fetch(`${apiBase}/mcp/connections`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -32,7 +100,6 @@ export class TunnelService {
       const connections = data.connections || [];
       
       for (const conn of connections) {
-        // If we found a connection that seems to be from a previous run of 'poke-code'
         if (conn.name === "poke-code") {
           console.log(`🗑️  Removing stale connection: ${conn.id}`);
           await fetch(`${apiBase}/mcp/connections/${conn.id}`, {
@@ -46,15 +113,11 @@ export class TunnelService {
     }
   }
 
-  async connect(token: string) {
-    // 1. Cleanup old connections
+  async connect(passedToken?: string) {
+    const token = await this.ensureAuth(passedToken);
+    
     await this.cleanupStaleConnections(token);
 
-    // 2. Initialize the official Poke SDK Tunnel
-    // The PokeTunnel requires a 'url' parameter. Since poke-code runs the agent
-    // logic in-process, we use a special 'local://' URL which tells the SDK
-    // to handle communication internally via event listeners rather than
-    // proxying to an external HTTP server.
     this.tunnel = new PokeTunnel({
       url: "local://",
       token,
@@ -67,29 +130,25 @@ export class TunnelService {
     });
 
     this.tunnel.on("disconnected", () => {
-      console.log("🔌 Tunnel disconnected.");
+      console.log("🔌 Tunnel disconnected. Reconnecting...");
     });
 
     this.tunnel.on("error", (err) => {
       console.error("🚨 Tunnel error:", err.message);
     });
 
-    // Handle incoming tool executions via the tunnel
     this.tunnel.on("execute_tool", async ({ toolName, args }) => {
       console.log(`📨 Executing tool: ${toolName}`);
       try {
-        const result = await this.toolManager.executeTool(toolName, args);
-        return result;
+        return await this.toolManager.executeTool(toolName, args);
       } catch (error: any) {
         throw new Error(error.message || "Internal tool error");
       }
     });
 
-    // Handle incoming queries via the tunnel
     this.tunnel.on("query", async ({ prompt }) => {
       console.log(`📨 Received query: ${prompt.substring(0, 50)}...`);
       const results: any[] = [];
-      // Note: processQuery was identified as the iterator method in earlier steps
       for await (const step of this.queryEngine.processQuery(prompt)) {
         results.push(step);
       }
