@@ -1,94 +1,97 @@
-import WebSocket from "ws";
+import { PokeTunnel } from "poke";
 import { ToolManager } from "../tools/ToolManager";
 import { QueryEngine } from "../QueryEngine";
-
-interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id: string | number;
-  method: string;
-  params?: any;
-}
-
-interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: string | number;
-  result?: any;
-  error?: {
-    code: number;
-    message: string;
-    data?: any;
-  };
-}
 
 export class TunnelService {
   private queryEngine: QueryEngine;
   private toolManager: ToolManager;
+  private tunnel?: PokeTunnel;
 
   constructor() {
     this.toolManager = new ToolManager();
     this.queryEngine = new QueryEngine(this.toolManager);
   }
 
-  async connect(token: string) {
-    const url = "wss://tunnel.poke.com/v1/connect";
+  /**
+   * Cleans up any potentially stale connections for this user before starting a new one.
+   * This ensures we don't hit limits or have ghost connections on the server.
+   */
+  private async cleanupStaleConnections(token: string) {
+    const apiBase = "https://poke.com/api/v1";
+    console.log("🧹 Cleaning up stale tunnel connections...");
     
-    console.log(`🌴 Connecting to Poke Tunnel at ${url}...`);
+    try {
+      // First, fetch active connections to find ones matching our client name
+      const response = await fetch(`${apiBase}/mcp/connections`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      if (!response.ok) return;
+      
+      const data = await response.json();
+      const connections = data.connections || [];
+      
+      for (const conn of connections) {
+        // If we found a connection that seems to be from a previous run of 'poke-code'
+        if (conn.name === "poke-code") {
+          console.log(`🗑️  Removing stale connection: ${conn.id}`);
+          await fetch(`${apiBase}/mcp/connections/${conn.id}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        }
+      }
+    } catch (error) {
+      console.warn("⚠️  Note: Could not complete stale connection cleanup.", error);
+    }
+  }
 
-    const socket = new WebSocket(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+  async connect(token: string) {
+    // 1. Cleanup old connections
+    await this.cleanupStaleConnections(token);
+
+    // 2. Initialize the official Poke SDK Tunnel
+    // In this refactored version, we let the SDK handle the WebSocket and protocol details.
+    this.tunnel = new PokeTunnel({
+      token,
+      name: "poke-code",
+      cleanupOnStop: true,
     });
 
-    socket.on("open", () => {
-      console.log("✅ Tunnel connection established and authenticated.");
+    this.tunnel.on("connected", (info) => {
+      console.log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
     });
 
-    socket.on("message", async (data) => {
+    this.tunnel.on("disconnected", () => {
+      console.log("🔌 Tunnel disconnected.");
+    });
+
+    this.tunnel.on("error", (err) => {
+      console.error("🚨 Tunnel error:", err.message);
+    });
+
+    // Handle incoming tool executions via the tunnel
+    this.tunnel.on("execute_tool", async ({ toolName, args, id }) => {
+      console.log(`📨 Executing tool: ${toolName}`);
       try {
-        const request: JsonRpcRequest = JSON.parse(data.toString());
-        console.log(`📨 Received request: ${request.method}`);
-        const response = await this.processRequest(request);
-        socket.send(JSON.stringify(response));
-      } catch (e) {
-        console.error("🚨 Error processing message:", e);
+        const result = await this.toolManager.executeTool(toolName, args);
+        return result;
+      } catch (error: any) {
+        throw new Error(error.message || "Internal tool error");
       }
     });
 
-    socket.on("error", (error) => {
-      console.error("🚨 Tunnel error:", error);
+    // Handle incoming queries via the tunnel
+    this.tunnel.on("query", async ({ prompt }) => {
+      console.log(`📨 Received query: ${prompt.substring(0, 50)}...`);
+      const results: any[] = [];
+      for await (const step of this.queryEngine.process(prompt)) {
+        results.push(step);
+      }
+      return results;
     });
 
-    socket.on("close", () => {
-      console.log("🔌 Tunnel disconnected. Retrying in 5s...");
-      setTimeout(() => this.connect(token), 5000);
-    });
-  }
-
-  private async processRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> {
-    const response: JsonRpcResponse = { jsonrpc: "2.0", id: request.id };
-    try {
-      response.result = await this.handleRequest(request);
-    } catch (e: any) {
-      response.error = { code: -32603, message: e.message || "Internal error" };
-    }
-    return response;
-  }
-
-  private async handleRequest(request: JsonRpcRequest): Promise<any> {
-    switch (request.method) {
-      case "execute_tool":
-        const { toolName, args } = request.params;
-        return await this.toolManager.executeTool(toolName, args);
-      case "query":
-        const { prompt } = request.params;
-        const results: any[] = [];
-        for await (const step of this.queryEngine.process(prompt)) {
-          results.push(step);
-        }
-        return results;
-      default:
-        throw new Error(`Method not found: ${request.method}`);
-    }
+    console.log("🌴 Starting Poke Tunnel...");
+    await this.tunnel.start();
   }
 }
