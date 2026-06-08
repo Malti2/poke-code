@@ -83,31 +83,37 @@ export class TunnelService {
       }
     }
 
-    // 5. Trigger browser login flow
+    // 5. Trigger manual code flow
     log("🔐 No authentication found. Triggering login...");
     
-    // The SDK might be failing to detect interactivity correctly, 
-    // so we'll force onCode to run and print immediately.
-    await login({
-      openBrowser: true,
-      onCode: ({ userCode, loginUrl }) => {
-        // This MUST print to the terminal
-        process.stdout.write("\n" + "=".repeat(60) + "\n");
-        process.stdout.write(" 🔑 POKE AUTHENTICATION REQUIRED\n");
-        process.stdout.write("=".repeat(60) + "\n");
-        process.stdout.write(`\n  1. Go to: ${loginUrl}\n`);
-        process.stdout.write(`  2. Enter code: ${userCode}\n`);
-        process.stdout.write("\n" + "=".repeat(60) + "\n\n");
-        
-        log("🌐 Opening browser (if supported)...");
-      },
+    // We'll use the SDK's login method but wrap it in a promise
+    // to ensure we catch the output and wait correctly.
+    const loginPromise = new Promise<string>((resolve, reject) => {
+      login({
+        openBrowser: true, // Try it, but the terminal output is the fallback
+        onCode: ({ userCode, loginUrl }) => {
+          // Force printing to terminal
+          const banner = `
+============================================================
+ 🔑 POKE AUTHENTICATION REQUIRED
+============================================================
+
+  1. Go to: \x1b[36m${loginUrl}\x1b[0m
+  2. Enter code: \x1b[1m${userCode}\x1b[0m
+
+============================================================
+`;
+          process.stderr.write(banner); // Write to stderr to avoid redirection
+          log("🌐 Opening browser (if supported)...");
+        },
+      }).then(() => {
+        const token = getToken();
+        if (token) resolve(token);
+        else reject(new Error("Login completed but no token was found."));
+      }).catch(reject);
     });
 
-    const token = getToken();
-    if (!token) {
-      throw new Error("Authentication failed: No token received after login flow.");
-    }
-
+    const token = await loginPromise;
     this.saveState({ ...state, token });
     return token;
   }
@@ -129,9 +135,9 @@ export class TunnelService {
 
     for (const id of ids) {
       try {
-        await fetch(`${base}/mcp/connections/${id}`, {
+        await fetch(\`\${base}/mcp/connections/\${id}\`, {
           method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: \`Bearer \${token}\` },
         });
       } catch {
         // ignore cleanup
@@ -159,17 +165,17 @@ export class TunnelService {
               ]
             };
           case "call_tool":
-            log(`📨 Executing tool: ${params.name}`);
+            log(\`📨 Executing tool: \${params.name}\`);
             return await this.toolManager.executeTool(params.name, params.arguments);
           case "query":
-            log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
+            log(\`📨 Received query: \${params.prompt.substring(0, 50)}...\`);
             const queryResults: any[] = [];
             for await (const step of this.queryEngine.processQuery(params.prompt)) {
               queryResults.push(step);
             }
             return queryResults;
           default:
-            throw new Error(`Method ${method} not found`);
+            throw new Error(\`Method \${method} not found\`);
         }
       };
 
@@ -185,12 +191,12 @@ export class TunnelService {
         const history = state.connectionHistory || [];
         if (info.connectionId) history.push(info.connectionId);
         this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
-        log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
+        log(\`✅ Tunnel connection established. ID: \${info.connectionId}\`);
       });
 
       this.tunnel.on("disconnected", () => log("🔌 Tunnel disconnected. Reconnecting..."));
-      this.tunnel.on("error", (err) => log(`🚨 Tunnel error: ${err.message}`));
-      this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
+      this.tunnel.on("error", (err) => log(\`🚨 Tunnel error: \${err.message}\`));
+      this.tunnel.on("toolsSynced", ({ toolCount }) => log(\`🔄 Synced \${toolCount} tools to Poke.\`));
 
       this.tunnel.on("execute_tool", async ({ toolName, args }) => {
         return await handleRequest("call_tool", { name: toolName, arguments: args });
@@ -203,8 +209,7 @@ export class TunnelService {
       log("🌴 Starting Poke Tunnel...");
       await this.tunnel.start();
     } catch (error: any) {
-      console.error("\n🚨 CRITICAL FAILURE during tunnel connection:");
-      console.error(error.message || error);
+      process.stderr.write(\`\\n🚨 CRITICAL FAILURE during tunnel connection: \${error.message || error}\\n\`);
       process.exit(1);
     }
   }
