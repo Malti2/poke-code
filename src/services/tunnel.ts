@@ -51,8 +51,12 @@ export class TunnelService {
     await this.cleanupStaleConnections(token);
 
     // 2. Initialize the official Poke SDK Tunnel
-    // In this refactored version, we let the SDK handle the WebSocket and protocol details.
+    // The PokeTunnel requires a 'url' parameter. Since poke-code runs the agent
+    // logic in-process, we use a special 'local://' URL which tells the SDK
+    // to handle communication internally via event listeners rather than
+    // proxying to an external HTTP server.
     this.tunnel = new PokeTunnel({
+      url: "local://",
       token,
       name: "poke-code",
       cleanupOnStop: true,
@@ -71,7 +75,7 @@ export class TunnelService {
     });
 
     // Handle incoming tool executions via the tunnel
-    this.tunnel.on("execute_tool", async ({ toolName, args, id }) => {
+    this.tunnel.on("execute_tool", async ({ toolName, args }) => {
       console.log(`📨 Executing tool: ${toolName}`);
       try {
         const result = await this.toolManager.executeTool(toolName, args);
@@ -85,7 +89,8 @@ export class TunnelService {
     this.tunnel.on("query", async ({ prompt }) => {
       console.log(`📨 Received query: ${prompt.substring(0, 50)}...`);
       const results: any[] = [];
-      for await (const step of this.queryEngine.process(prompt)) {
+      // Note: processQuery was identified as the iterator method in earlier steps
+      for await (const step of this.queryEngine.processQuery(prompt)) {
         results.push(step);
       }
       return results;
