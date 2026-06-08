@@ -45,19 +45,16 @@ export class TunnelService {
   }
 
   private async ensureAuth(passedToken?: string): Promise<string> {
-    // 1. Try passed token
     if (passedToken) {
       this.saveConfig({ token: passedToken });
       return passedToken;
     }
 
-    // 2. Try saved token
     const config = this.loadConfig();
     if (config.token) {
       return config.token;
     }
 
-    // 3. Try SDK's internal state
     if (isLoggedIn()) {
       const token = getToken();
       if (token) {
@@ -66,7 +63,6 @@ export class TunnelService {
       }
     }
 
-    // 4. Trigger browser login
     console.log("🔐 No authentication found. Opening browser for Poke login...");
     await login({
       openBrowser: true,
@@ -115,11 +111,81 @@ export class TunnelService {
 
   async connect(passedToken?: string) {
     const token = await this.ensureAuth(passedToken);
-    
     await this.cleanupStaleConnections(token);
 
+    // Start a local HTTP server to satisfy the PokeTunnel's MCP requirements
+    const server = Bun.serve({
+      port: 0, // Use any available port
+      async fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname !== "/mcp") return new Response("Not Found", { status: 404 });
+
+        if (req.method === "POST") {
+          try {
+            const body = await req.json();
+            const { method, params, id } = body;
+
+            let result: any;
+
+            switch (method) {
+              case "list_tools":
+                // Standard MCP tool discovery
+                result = {
+                  tools: [
+                    { name: "read_file", description: "Read content from a file" },
+                    { name: "write_file", description: "Write content to a file" },
+                    { name: "list_files", description: "List files in a directory" },
+                    { name: "search_files", description: "Search for files by pattern" },
+                    { name: "execute_bash", description: "Execute a bash command" }
+                  ]
+                };
+                break;
+
+              case "call_tool":
+                console.log(`📨 Executing tool: ${params.name}`);
+                result = await this.toolManager.executeTool(params.name, params.arguments);
+                break;
+
+              case "query":
+                console.log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
+                const queryResults: any[] = [];
+                for await (const step of this.queryEngine.processQuery(params.prompt)) {
+                  queryResults.push(step);
+                }
+                result = queryResults;
+                break;
+
+              default:
+                return new Response(JSON.stringify({
+                  jsonrpc: "2.0",
+                  id,
+                  error: { code: -32601, message: "Method not found" }
+                }), { headers: { "Content-Type": "application/json" } });
+            }
+
+            return new Response(JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result
+            }), { headers: { "Content-Type": "application/json" } });
+
+          } catch (e: any) {
+            return new Response(JSON.stringify({
+              jsonrpc: "2.0",
+              error: { code: -32603, message: e.message }
+            }), { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+        }
+
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+    });
+
+    const localUrl = `http://127.0.0.1:${server.port}/mcp`;
+    console.log(`📡 Local MCP server listening at ${localUrl}`);
+
     this.tunnel = new PokeTunnel({
-      url: "local://",
+      url: localUrl,
       token,
       name: "poke-code",
       cleanupOnStop: true,
@@ -135,24 +201,6 @@ export class TunnelService {
 
     this.tunnel.on("error", (err) => {
       console.error("🚨 Tunnel error:", err.message);
-    });
-
-    this.tunnel.on("execute_tool", async ({ toolName, args }) => {
-      console.log(`📨 Executing tool: ${toolName}`);
-      try {
-        return await this.toolManager.executeTool(toolName, args);
-      } catch (error: any) {
-        throw new Error(error.message || "Internal tool error");
-      }
-    });
-
-    this.tunnel.on("query", async ({ prompt }) => {
-      console.log(`📨 Received query: ${prompt.substring(0, 50)}...`);
-      const results: any[] = [];
-      for await (const step of this.queryEngine.processQuery(prompt)) {
-        results.push(step);
-      }
-      return results;
     });
 
     console.log("🌴 Starting Poke Tunnel...");
