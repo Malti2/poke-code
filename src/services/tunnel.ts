@@ -1,3 +1,4 @@
+import WebSocket from "ws";
 import { ToolManager } from "../tools/ToolManager";
 import { QueryEngine } from "../QueryEngine";
 
@@ -39,29 +40,29 @@ export class TunnelService {
       },
     });
 
-    socket.onopen = () => {
+    socket.on("open", () => {
       console.log("✅ Tunnel connection established and authenticated.");
-    };
+    });
 
-    socket.onmessage = async (event) => {
+    socket.on("message", async (data) => {
       try {
-        const request: JsonRpcRequest = JSON.parse(event.data.toString());
+        const request: JsonRpcRequest = JSON.parse(data.toString());
         console.log(`📨 Received request: ${request.method}`);
         const response = await this.processRequest(request);
         socket.send(JSON.stringify(response));
       } catch (e) {
         console.error("🚨 Error processing message:", e);
       }
-    };
+    });
 
-    socket.onerror = (error) => {
+    socket.on("error", (error) => {
       console.error("🚨 Tunnel error:", error);
-    };
+    });
 
-    socket.onclose = () => {
+    socket.on("close", () => {
       console.log("🔌 Tunnel disconnected. Retrying in 5s...");
       setTimeout(() => this.connect(token), 5000);
-    };
+    });
   }
 
   private async processRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> {
