@@ -1,4 +1,4 @@
-import { fileTools } from "./fileTools";
+import { fileTools } from "./tools/fileTools";
 
 export interface Thought {
   type: "thought" | "action" | "result" | "response";
