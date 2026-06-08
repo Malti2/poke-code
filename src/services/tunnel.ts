@@ -51,6 +51,41 @@ export class TunnelService {
     }
   }
 
+  private clearToken() {
+    const state = this.loadState();
+    delete state.token;
+    this.saveState(state);
+  }
+
+  private async triggerManualLogin(): Promise<string> {
+    log("🔐 No valid authentication found. Triggering login...");
+    
+    return new Promise<string>((resolve, reject) => {
+      login({
+        openBrowser: true,
+        onCode: ({ userCode, loginUrl }) => {
+          console.error("\n============================================================");
+          console.error(" 🔑 POKE AUTHENTICATION REQUIRED");
+          console.error("============================================================");
+          console.error(`\n  1. Go to: ${loginUrl}`);
+          console.error(`  2. Enter code: ${userCode}`);
+          console.error("\n============================================================\n");
+          
+          log("🌐 Opening browser (if supported)...");
+        },
+      }).then(() => {
+        const token = getToken();
+        if (token) {
+          const state = this.loadState();
+          this.saveState({ ...state, token });
+          resolve(token);
+        } else {
+          reject(new Error("Login completed but no token was found."));
+        }
+      }).catch(reject);
+    });
+  }
+
   private async ensureAuth(passedToken?: string): Promise<string> {
     const state = this.loadState();
     
@@ -67,7 +102,7 @@ export class TunnelService {
       return state.token;
     }
 
-    // 3. Environment variable (standard pattern)
+    // 3. Environment variable
     if (process.env.POKE_API_KEY) {
       log("🔑 Using token from POKE_API_KEY environment variable.");
       return process.env.POKE_API_KEY;
@@ -83,35 +118,8 @@ export class TunnelService {
       }
     }
 
-    // 5. Trigger manual code flow
-    log("🔐 No authentication found. Triggering login...");
-    
-    // We'll use the SDK's login method but wrap it in a promise
-    // to ensure we catch the output and wait correctly.
-    const loginPromise = new Promise<string>((resolve, reject) => {
-      login({
-        openBrowser: true, // Try it, but the terminal output is the fallback
-        onCode: ({ userCode, loginUrl }) => {
-          // Force printing to terminal via console.error for unbuffered output
-          console.error("\n============================================================");
-          console.error(" 🔑 POKE AUTHENTICATION REQUIRED");
-          console.error("============================================================");
-          console.error(`\n  1. Go to: ${loginUrl}`);
-          console.error(`  2. Enter code: ${userCode}`);
-          console.error("\n============================================================\n");
-          
-          log("🌐 Opening browser (if supported)...");
-        },
-      }).then(() => {
-        const token = getToken();
-        if (token) resolve(token);
-        else reject(new Error("Login completed but no token was found."));
-      }).catch(reject);
-    });
-
-    const token = await loginPromise;
-    this.saveState({ ...state, token });
-    return token;
+    // 5. Trigger login
+    return await this.triggerManualLogin();
   }
 
   private async cleanupStaleConnections(token: string) {
@@ -140,73 +148,120 @@ export class TunnelService {
       }
     }
 
-    this.saveState({ token: state.token });
+    this.saveState({ ...state, connectionId: undefined, connectionHistory: [] });
   }
 
   async connect(passedToken?: string) {
-    try {
-      const token = await this.ensureAuth(passedToken);
-      await this.cleanupStaleConnections(token);
+    let currentToken = await this.ensureAuth(passedToken);
+    let connectionAttempts = 0;
+    const MAX_AUTH_RETRIES = 1;
 
-      const handleRequest = async (method: string, params: any) => {
-        switch (method) {
-          case "list_tools":
-            return {
-              tools: [
-                { name: "read_file", description: "Read content from a file" },
-                { name: "write_file", description: "Write content to a file" },
-                { name: "list_files", description: "List files in a directory" },
-                { name: "search_files", description: "Search for files by pattern" },
-                { name: "execute_bash", description: "Execute a bash command" }
-              ]
-            };
-          case "call_tool":
-            log(`📨 Executing tool: ${params.name}`);
-            return await this.toolManager.executeTool(params.name, params.arguments);
-          case "query":
-            log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
-            const queryResults: any[] = [];
-            for await (const step of this.queryEngine.processQuery(params.prompt)) {
-              queryResults.push(step);
-            }
-            return queryResults;
-          default:
-            throw new Error(`Method ${method} not found`);
+    const startTunnel = async (token: string): Promise<void> => {
+      return new Promise(async (resolve, reject) => {
+        let isResolved = false;
+        
+        await this.cleanupStaleConnections(token);
+
+        const handleRequest = async (method: string, params: any) => {
+          switch (method) {
+            case "list_tools":
+              return {
+                tools: [
+                  { name: "read_file", description: "Read content from a file" },
+                  { name: "write_file", description: "Write content to a file" },
+                  { name: "list_files", description: "List files in a directory" },
+                  { name: "search_files", description: "Search for files by pattern" },
+                  { name: "execute_bash", description: "Execute a bash command" }
+                ]
+              };
+            case "call_tool":
+              log(`📨 Executing tool: ${params.name}`);
+              return await this.toolManager.executeTool(params.name, params.arguments);
+            case "query":
+              log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
+              const queryResults: any[] = [];
+              for await (const step of this.queryEngine.processQuery(params.prompt)) {
+                queryResults.push(step);
+              }
+              return queryResults;
+            default:
+              throw new Error(`Method ${method} not found`);
+          }
+        };
+
+        this.tunnel = new PokeTunnel({
+          url: "local://",
+          token,
+          name: "poke-code",
+          autoReconnect: true,
+          cleanupOnStop: true,
+        });
+
+        // Set up a "canary" to detect immediate auth failures
+        const connectionStartTime = Date.now();
+
+        this.tunnel.on("connected", (info) => {
+          const state = this.loadState();
+          const history = state.connectionHistory || [];
+          if (info.connectionId) history.push(info.connectionId);
+          this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
+          log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
+          isResolved = true;
+          resolve();
+        });
+
+        this.tunnel.on("disconnected", () => {
+          log("🔌 Tunnel disconnected.");
+          const duration = Date.now() - connectionStartTime;
+          
+          // If we disconnect instantly (< 3s), it's likely an auth issue
+          if (!isResolved && duration < 3000 && connectionAttempts < MAX_AUTH_RETRIES) {
+            log("⚠️ Immediate disconnect detected. Current token may be invalid.");
+            this.tunnel?.stop();
+            reject(new Error("AUTH_INVALID"));
+          }
+        });
+
+        this.tunnel.on("error", (err) => {
+          log(`🚨 Tunnel error: ${err.message}`);
+          if (err.message.includes("401") || err.message.toLowerCase().includes("auth")) {
+            this.tunnel?.stop();
+            reject(new Error("AUTH_INVALID"));
+          }
+        });
+
+        this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
+
+        this.tunnel.on("execute_tool", async ({ toolName, args }) => {
+          return await handleRequest("call_tool", { name: toolName, arguments: args });
+        });
+
+        this.tunnel.on("query", async ({ prompt }) => {
+          return await handleRequest("query", { prompt });
+        });
+
+        log("🌴 Starting Poke Tunnel...");
+        try {
+          await this.tunnel.start();
+        } catch (e: any) {
+          if (!isResolved) reject(e);
         }
-      };
-
-      this.tunnel = new PokeTunnel({
-        url: "local://",
-        token,
-        name: "poke-code",
-        cleanupOnStop: true,
       });
+    };
 
-      this.tunnel.on("connected", (info) => {
-        const state = this.loadState();
-        const history = state.connectionHistory || [];
-        if (info.connectionId) history.push(info.connectionId);
-        this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
-        log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
-      });
-
-      this.tunnel.on("disconnected", () => log("🔌 Tunnel disconnected. Reconnecting..."));
-      this.tunnel.on("error", (err) => log(`🚨 Tunnel error: ${err.message}`));
-      this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
-
-      this.tunnel.on("execute_tool", async ({ toolName, args }) => {
-        return await handleRequest("call_tool", { toolName, arguments: args });
-      });
-
-      this.tunnel.on("query", async ({ prompt }) => {
-        return await handleRequest("query", { prompt });
-      });
-
-      log("🌴 Starting Poke Tunnel...");
-      await this.tunnel.start();
+    try {
+      await startTunnel(currentToken);
     } catch (error: any) {
-      console.error(`\n🚨 CRITICAL FAILURE during tunnel connection: ${error.message || error}`);
-      process.exit(1);
+      if (error.message === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
+        log("🔄 Clearing invalid token and re-authenticating...");
+        this.clearToken();
+        connectionAttempts++;
+        currentToken = await this.triggerManualLogin();
+        await startTunnel(currentToken);
+      } else {
+        console.error(`\n🚨 CRITICAL FAILURE: ${error.message || error}`);
+        process.exit(1);
+      }
     }
   }
 }
