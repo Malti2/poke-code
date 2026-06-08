@@ -135,78 +135,39 @@ export class TunnelService {
     const token = await this.ensureAuth(passedToken);
     await this.cleanupStaleConnections(token);
 
-    // Local MCP server to proxy tool calls
-    const server = Bun.serve({
-      port: 0,
-      async fetch(req) {
-        const url = new URL(req.url);
-        if (url.pathname !== "/mcp") return new Response("Not Found", { status: 404 });
+    // In-process handling logic
+    const handleRequest = async (method: string, params: any) => {
+      switch (method) {
+        case "list_tools":
+          return {
+            tools: [
+              { name: "read_file", description: "Read content from a file" },
+              { name: "write_file", description: "Write content to a file" },
+              { name: "list_files", description: "List files in a directory" },
+              { name: "search_files", description: "Search for files by pattern" },
+              { name: "execute_bash", description: "Execute a bash command" }
+            ]
+          };
 
-        if (req.method === "POST") {
-          try {
-            const body = await req.json();
-            const { method, params, id } = body;
+        case "call_tool":
+          log(`📨 Executing tool: ${params.name}`);
+          return await this.toolManager.executeTool(params.name, params.arguments);
 
-            let result: any;
-
-            switch (method) {
-              case "list_tools":
-                result = {
-                  tools: [
-                    { name: "read_file", description: "Read content from a file" },
-                    { name: "write_file", description: "Write content to a file" },
-                    { name: "list_files", description: "List files in a directory" },
-                    { name: "search_files", description: "Search for files by pattern" },
-                    { name: "execute_bash", description: "Execute a bash command" }
-                  ]
-                };
-                break;
-
-              case "call_tool":
-                log(`📨 Executing tool: ${params.name}`);
-                result = await this.toolManager.executeTool(params.name, params.arguments);
-                break;
-
-              case "query":
-                log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
-                const queryResults: any[] = [];
-                for await (const step of this.queryEngine.processQuery(params.prompt)) {
-                  queryResults.push(step);
-                }
-                result = queryResults;
-                break;
-
-              default:
-                return new Response(JSON.stringify({
-                  jsonrpc: "2.0",
-                  id,
-                  error: { code: -32601, message: "Method not found" }
-                }), { headers: { "Content-Type": "application/json" } });
-            }
-
-            return new Response(JSON.stringify({
-              jsonrpc: "2.0",
-              id,
-              result
-            }), { headers: { "Content-Type": "application/json" } });
-
-          } catch (e: any) {
-            return new Response(JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32603, message: e.message }
-            }), { status: 500, headers: { "Content-Type": "application/json" } });
+        case "query":
+          log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
+          const queryResults: any[] = [];
+          for await (const step of this.queryEngine.processQuery(params.prompt)) {
+            queryResults.push(step);
           }
-        }
+          return queryResults;
 
-        return new Response("Method Not Allowed", { status: 405 });
+        default:
+          throw new Error(`Method ${method} not found`);
       }
-    });
-
-    const mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
-    log(`📡 Local MCP server listening at ${mcpUrl}`);
+    };
 
     this.tunnel = new PokeTunnel({
-      url: mcpUrl,
+      url: "local://",
       token,
       name: "poke-code",
       cleanupOnStop: true,
@@ -229,6 +190,15 @@ export class TunnelService {
     this.tunnel.on("disconnected", () => log("🔌 Tunnel disconnected. Reconnecting..."));
     this.tunnel.on("error", (err) => log(`🚨 Tunnel error: ${err.message}`));
     this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
+
+    // SDK natively supports local:// via these handlers when no HTTP server is present
+    this.tunnel.on("execute_tool", async ({ toolName, args }) => {
+      return await handleRequest("call_tool", { name: toolName, arguments: args });
+    });
+
+    this.tunnel.on("query", async ({ prompt }) => {
+      return await handleRequest("query", { prompt });
+    });
 
     log("🌴 Starting Poke Tunnel...");
     await this.tunnel.start();
