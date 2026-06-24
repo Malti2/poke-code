@@ -1,5 +1,5 @@
 import { Agent } from "./agent/Agent";
-import { buildSystemPrompt, createProvider } from "./agent";
+import { buildSystemPrompt, createProvider, loadProjectContext } from "./agent";
 import { allTools } from "./tools";
 import { formatToolCall, previewOutput } from "./ui/format";
 import { palette } from "./ui/theme";
@@ -11,11 +11,15 @@ import { palette } from "./ui/theme";
  */
 export async function runHeadless(prompt: string): Promise<string> {
   const provider = createProvider();
+  const cwd = process.cwd();
+  const context = loadProjectContext(cwd);
+  if (context) process.stderr.write(palette.dim(`(using ${context.filename} for context)`) + "\n");
+
   const agent = new Agent({
     provider,
     tools: allTools,
-    system: buildSystemPrompt(process.cwd()),
-    cwd: process.cwd(),
+    system: buildSystemPrompt(cwd, context),
+    cwd,
   });
 
   let finalText = "";

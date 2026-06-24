@@ -21,12 +21,15 @@ bun install
 
 ## Use it as an interactive agent
 
-The agent uses the Anthropic Messages API. Set a key first:
+The agent works with Anthropic **or** any OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio, …). Set one of:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-# optional: export ANTHROPIC_MODEL=claude-sonnet-4-5
+export ANTHROPIC_API_KEY=sk-ant-...          # optional: ANTHROPIC_MODEL
+# or
+export OPENAI_API_KEY=sk-...                 # optional: OPENAI_MODEL, OPENAI_BASE_URL
 ```
+
+If both are set, Anthropic wins; force a choice with `POKE_CODE_PROVIDER=openai|anthropic`.
 
 Then start the agent:
 
@@ -36,7 +39,11 @@ bun start -p "fix the bug in src/foo.ts and run the tests"   # headless, prints 
 bun start run "summarise this repo"                          # same as -p
 ```
 
-In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve.
+In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve. Type `/help` for commands.
+
+### Project context
+
+Like Claude Code's `CLAUDE.md`, poke-code reads a project context file from the working directory and folds it into the system prompt. The first of these that exists wins: `POKE.md`, `AGENTS.md`, `CLAUDE.md`, `.pokecode.md`. Use it to record conventions, build commands, and gotchas.
 
 ## Connect your tools to Poke
 
@@ -76,8 +83,8 @@ bun run typecheck # type-check with tsc
 
 ```
             ┌─────────────────────────────┐
- ANTHROPIC  │  Agent loop (src/agent)      │  interactive TUI / headless
-   API ◀────│  provider · tools · prompt   │  (src/ui, src/runHeadless)
+ Anthropic  │  Agent loop (src/agent)      │  interactive TUI / headless
+  / OpenAI ◀│  provider · tools · prompt   │  (src/ui, src/runHeadless)
             └──────────────┬──────────────┘
                            │ shared tool layer (src/tools)
             ┌──────────────┴──────────────┐

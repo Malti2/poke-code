@@ -3,6 +3,7 @@ import { Box, Text, Static, useApp, useInput } from "ink";
 import { Agent, type AgentEvent } from "../agent/Agent";
 import type { LlmProvider } from "../agent/provider";
 import type { ToolDefinition } from "../tools/types";
+import type { ProjectContext } from "../agent/context";
 import { buildSystemPrompt } from "../agent/prompt";
 import { BANNER } from "./theme";
 import { formatToolCall, previewOutput } from "./format";
@@ -27,9 +28,11 @@ export interface AppProps {
   cwd: string;
   /** When true, mutating tools require y/n confirmation. */
   confirm: boolean;
+  /** Project context file (POKE.md / AGENTS.md / …), if present. */
+  context?: ProjectContext | null;
 }
 
-export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm }) => {
+export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm, context }) => {
   const { exit } = useApp();
   const [log, setLog] = useState<LogItem[]>([]);
   const [input, setInput] = useState("");
@@ -43,7 +46,7 @@ export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm }) => {
     agent.current = new Agent({
       provider,
       tools,
-      system: buildSystemPrompt(cwd),
+      system: buildSystemPrompt(cwd, context),
       cwd,
       approver: confirm
         ? ({ name, input }) =>
@@ -75,8 +78,12 @@ export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm }) => {
     if (trimmed === "/help") {
       push({
         kind: "info",
-        text: "Commands: /clear reset transcript · /exit quit. Otherwise just describe a coding task.",
+        text: "Commands: /tools list tools · /clear reset transcript · /exit quit. Otherwise just describe a coding task.",
       });
+      return;
+    }
+    if (trimmed === "/tools") {
+      push({ kind: "info", text: "Tools: " + tools.map((t) => t.name).join(", ") });
       return;
     }
 
@@ -128,6 +135,10 @@ export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm }) => {
           item.key === "banner" ? (
             <Box key="banner" flexDirection="column" marginBottom={1}>
               <Text>{BANNER}</Text>
+              <Text dimColor>
+                {provider.name}:{provider.model} · {cwd}
+                {context ? ` · context: ${context.filename}` : ""} · /help for commands
+              </Text>
             </Box>
           ) : (
             <LogLine key={item.key} item={item as LogItem} />

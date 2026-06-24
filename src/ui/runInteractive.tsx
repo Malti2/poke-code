@@ -2,13 +2,21 @@ import React from "react";
 import { render } from "ink";
 import { App } from "./App";
 import { allTools } from "../tools";
-import { createProvider } from "../agent";
+import { createProvider, loadProjectContext } from "../agent";
 
 /** Launch the interactive terminal agent. Requires a TTY. */
 export async function runInteractive(opts: { confirm: boolean }): Promise<void> {
   const provider = createProvider(); // throws with a helpful message if unconfigured
+  const cwd = process.cwd();
+  const context = loadProjectContext(cwd);
   const { waitUntilExit } = render(
-    <App provider={provider} tools={allTools} cwd={process.cwd()} confirm={opts.confirm} />
+    <App
+      provider={provider}
+      tools={allTools}
+      cwd={cwd}
+      confirm={opts.confirm}
+      context={context}
+    />
   );
   await waitUntilExit();
 }
