@@ -1,5 +1,6 @@
 import { Agent, type AgentEvent } from "./agent/Agent";
 import { buildSystemPrompt, createProvider, loadProjectContext } from "./agent";
+import { SessionStore } from "./agent/session";
 import type { LlmProvider } from "./agent/provider";
 import { agentTools } from "./tools";
 import { formatToolCall, previewOutput } from "./ui/format";
@@ -13,6 +14,10 @@ export interface HeadlessOptions {
   /** "text" streams to stdout; "json" prints one structured object at the end. */
   format?: OutputFormat;
   cwd?: string;
+  /** Resume the most recent session for this cwd. */
+  continueSession?: boolean;
+  /** Override the session store (used by tests). */
+  store?: SessionStore;
 }
 
 export interface HeadlessResult {
@@ -39,7 +44,18 @@ export async function runHeadless(prompt: string, opts: HeadlessOptions = {}): P
   if (context && format === "text")
     process.stderr.write(palette.dim(`(using ${context.filename} for context)`) + "\n");
 
-  const agent = new Agent({ provider, tools: agentTools, system: buildSystemPrompt(cwd, context), cwd });
+  const store = opts.store ?? new SessionStore();
+  let session = opts.continueSession ? store.loadLatest(cwd) : null;
+  if (session && format === "text")
+    process.stderr.write(palette.dim(`(resumed session with ${session.messages.length} messages)`) + "\n");
+
+  const agent = new Agent({
+    provider,
+    tools: agentTools,
+    system: buildSystemPrompt(cwd, context),
+    cwd,
+    messages: session?.messages,
+  });
 
   const toolCalls: HeadlessResult["toolCalls"] = [];
   let result = "";
@@ -61,6 +77,11 @@ export async function runHeadless(prompt: string, opts: HeadlessOptions = {}): P
         break;
     }
   }
+
+  // Persist the (possibly resumed) conversation so it can be continued later.
+  session = session ?? store.newSession(cwd, provider.name, provider.model);
+  session.messages = agent.messages;
+  store.save(session);
 
   const out: HeadlessResult = {
     result,

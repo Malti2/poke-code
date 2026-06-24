@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Box, Text, Static, useApp, useInput } from "ink";
 import { Agent, type AgentEvent } from "../agent/Agent";
-import type { LlmProvider } from "../agent/provider";
+import type { LlmProvider, Message } from "../agent/provider";
 import type { ToolDefinition } from "../tools/types";
 import type { ProjectContext } from "../agent/context";
 import { buildSystemPrompt } from "../agent/prompt";
@@ -30,9 +30,21 @@ export interface AppProps {
   confirm: boolean;
   /** Project context file (POKE.md / AGENTS.md / …), if present. */
   context?: ProjectContext | null;
+  /** Prior conversation to resume from. */
+  initialMessages?: Message[];
+  /** Called after each completed turn so the conversation can be persisted. */
+  onPersist?: (messages: Message[]) => void;
 }
 
-export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm, context }) => {
+export const App: React.FC<AppProps> = ({
+  provider,
+  tools,
+  cwd,
+  confirm,
+  context,
+  initialMessages,
+  onPersist,
+}) => {
   const { exit } = useApp();
   const [log, setLog] = useState<LogItem[]>([]);
   const [input, setInput] = useState("");
@@ -48,6 +60,7 @@ export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm, context
       tools,
       system: buildSystemPrompt(cwd, context),
       cwd,
+      messages: initialMessages,
       approver: confirm
         ? ({ name, input }) =>
             new Promise<boolean>((resolve) =>
@@ -97,6 +110,7 @@ export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm, context
       push({ kind: "error", text: (e as Error).message, isError: true });
     } finally {
       setBusy(false);
+      onPersist?.(agent.current!.messages);
     }
   };
 
@@ -137,7 +151,9 @@ export const App: React.FC<AppProps> = ({ provider, tools, cwd, confirm, context
               <Text>{BANNER}</Text>
               <Text dimColor>
                 {provider.name}:{provider.model} · {cwd}
-                {context ? ` · context: ${context.filename}` : ""} · /help for commands
+                {context ? ` · context: ${context.filename}` : ""}
+                {initialMessages?.length ? ` · resumed ${initialMessages.length} msgs` : ""} · /help
+                for commands
               </Text>
             </Box>
           ) : (

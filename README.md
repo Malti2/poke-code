@@ -35,12 +35,13 @@ Then start the agent:
 
 ```bash
 bun start                       # interactive TUI
+bun start -c                    # resume the most recent session in this dir
 bun start -p "fix the bug in src/foo.ts and run the tests"   # headless, prints result
 bun start run "summarise this repo"                          # same as -p
 bun start -p "audit deps" --output-format json               # structured output for scripts
 ```
 
-In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve. Type `/help` for commands. For multi-step work the agent keeps a live plan (an `update_plan` tool, like Claude Code's todo list).
+In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve. Type `/help` for commands. For multi-step work the agent keeps a live plan (an `update_plan` tool, like Claude Code's todo list). Conversations are saved under `~/.config/poke-code/sessions`; resume the latest with `-c` / `--continue`.
 
 ### Project context
 

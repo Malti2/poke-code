@@ -8,6 +8,8 @@ export type { AgentEvent, Approver } from "./Agent";
 export { buildSystemPrompt } from "./prompt";
 export { loadProjectContext, CONTEXT_FILENAMES } from "./context";
 export type { ProjectContext } from "./context";
+export { SessionStore } from "./session";
+export type { Session } from "./session";
 export { AnthropicProvider } from "./providers/anthropic";
 export { OpenAiProvider } from "./providers/openai";
 export { MockProvider } from "./providers/mock";

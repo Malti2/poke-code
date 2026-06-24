@@ -23,6 +23,8 @@ export interface AgentOptions {
   cwd: string;
   maxSteps?: number;
   approver?: Approver;
+  /** Prior conversation to resume from (e.g. a persisted session). */
+  messages?: Message[];
 }
 
 export class Agent {
@@ -42,6 +44,7 @@ export class Agent {
     this.ctx = { cwd: opts.cwd };
     this.maxSteps = opts.maxSteps ?? 25;
     this.approver = opts.approver;
+    if (opts.messages?.length) this.messages.push(...opts.messages);
   }
 
   private toolSpecs() {

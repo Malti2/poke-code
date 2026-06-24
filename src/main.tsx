@@ -14,31 +14,41 @@ program
 program
   .option("-p, --print <prompt>", "run a single prompt headlessly and print the result")
   .option("--output-format <format>", "headless output format: text or json", "text")
+  .option("-c, --continue", "resume the most recent session in this directory")
   .option("--no-confirm", "do not ask for confirmation before running mutating tools")
-  .action(async (opts: { print?: string; outputFormat?: string; confirm: boolean }) => {
-    try {
-      if (opts.print) {
-        const { runHeadless } = await import("./runHeadless");
-        await runHeadless(opts.print, { format: opts.outputFormat === "json" ? "json" : "text" });
-      } else {
-        const { runInteractive } = await import("./ui/runInteractive");
-        await runInteractive({ confirm: opts.confirm });
+  .action(
+    async (opts: { print?: string; outputFormat?: string; continue?: boolean; confirm: boolean }) => {
+      try {
+        if (opts.print) {
+          const { runHeadless } = await import("./runHeadless");
+          await runHeadless(opts.print, {
+            format: opts.outputFormat === "json" ? "json" : "text",
+            continueSession: opts.continue,
+          });
+        } else {
+          const { runInteractive } = await import("./ui/runInteractive");
+          await runInteractive({ confirm: opts.confirm, continueSession: opts.continue });
+        }
+      } catch (e) {
+        console.error(palette.err((e as Error).message));
+        process.exit(1);
       }
-    } catch (e) {
-      console.error(palette.err((e as Error).message));
-      process.exit(1);
     }
-  });
+  );
 
 // ── run: alias for headless prompt ─────────────────────────────────────────
 program
   .command("run <prompt...>")
   .description("run a single prompt headlessly (same as -p)")
   .option("--output-format <format>", "output format: text or json", "text")
-  .action(async (prompt: string[], opts: { outputFormat?: string }) => {
+  .option("-c, --continue", "resume the most recent session in this directory")
+  .action(async (prompt: string[], opts: { outputFormat?: string; continue?: boolean }) => {
     try {
       const { runHeadless } = await import("./runHeadless");
-      await runHeadless(prompt.join(" "), { format: opts.outputFormat === "json" ? "json" : "text" });
+      await runHeadless(prompt.join(" "), {
+        format: opts.outputFormat === "json" ? "json" : "text",
+        continueSession: opts.continue,
+      });
     } catch (e) {
       console.error(palette.err((e as Error).message));
       process.exit(1);
