@@ -49,8 +49,8 @@ In the interactive UI you type a task and watch Poke's tool calls and answers st
 | `write_file` | Create or overwrite a file |
 | `edit_file` | Exact-string replacement in a file |
 | `list_files` | List a directory |
-| `glob` | Find files by glob pattern |
-| `grep` | Search file contents by regex |
+| `glob` | Find files by glob pattern, sorted by most recently modified |
+| `grep` | Search file contents by regex; optionally restrict files with a glob |
 | `execute_bash` | Run a shell command (with timeout) |
 | `update_plan` | Track a multi-step plan, shown in your terminal |
 | `send_answer` | Show a message/result to you (set `final` when done) |
@@ -67,6 +67,7 @@ In the interactive UI you type a task and watch Poke's tool calls and answers st
 bun start tunnel           # just expose the tools to Poke (no task loop)
 bun start serve --port 3000   # run the local MCP server only (debugging)
 bun start whoami           # check auth
+bun start logout           # clear stored Poke credentials
 ```
 
 ## Develop
