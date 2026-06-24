@@ -95,6 +95,15 @@ export class TunnelService {
   /** Connect the tunnel and return once it is live. */
   async connect(): Promise<void> {
     const cwd = this.opts.cwd ?? process.cwd();
+
+    // Run ensureToken and subsequent connection logic in the background
+    // so it doesn't block CLI startup on slow fetch or missing API key.
+    this.startBackgroundConnection(cwd).catch((err) => {
+      this.emit({ kind: "error", message: `Background connection failed: ${err.message}` });
+    });
+  }
+
+  private async startBackgroundConnection(cwd: string): Promise<void> {
     const token = await this.ensureToken();
     await this.cleanupStaleConnection(token);
 
