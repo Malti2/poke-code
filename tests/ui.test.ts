@@ -2,39 +2,66 @@ import { test, expect } from "bun:test";
 import React from "react";
 import { render } from "ink-testing-library";
 import { App } from "../src/ui/App";
-import { MockProvider } from "../src/agent/providers/mock";
-import { allTools } from "../src/tools";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-test("App renders the banner and prompt", () => {
-  const provider = new MockProvider([
-    { content: [{ type: "text", text: "hi" }], stopReason: "end_turn" },
-  ]);
+/** A stand-in for PokeCodeRunner that lets the test drive events. */
+class FakeRunner {
+  cwd = "/tmp/project";
+  connectionId?: string;
+  sent: string[] = [];
+  private listeners = new Set<(e: any) => void>();
+  on(l: (e: any) => void) {
+    this.listeners.add(l);
+    return () => this.listeners.delete(l);
+  }
+  emit(e: any) {
+    for (const l of this.listeners) l(e);
+  }
+  async start() {
+    this.connectionId = "abc123";
+    this.emit({ type: "connected", connectionId: "abc123" });
+  }
+  async sendTask(t: string) {
+    this.sent.push(t);
+  }
+  async stop() {}
+}
+
+test("App renders the banner and connects", async () => {
+  const runner = new FakeRunner();
   const { lastFrame, unmount } = render(
-    React.createElement(App, { provider, tools: allTools, cwd: process.cwd(), confirm: false })
+    React.createElement(App, { runner: runner as any, cwd: runner.cwd })
   );
+  await delay(30);
   const frame = lastFrame() ?? "";
-  expect(frame).toContain("by Interaction Company");
-  expect(frame).toContain("❯");
+  expect(frame).toContain("poke · /tmp/project");
+  expect(frame).toContain("Connected to Poke (id abc123)");
   unmount();
 });
 
-test("submitting a prompt renders the assistant reply", async () => {
-  const provider = new MockProvider([
-    { content: [{ type: "text", text: "Hello from poke-code!" }], stopReason: "end_turn" },
-  ]);
+test("submitting a task forwards it to the runner and shows answers", async () => {
+  const runner = new FakeRunner();
   const { lastFrame, stdin, unmount } = render(
-    React.createElement(App, { provider, tools: allTools, cwd: process.cwd(), confirm: false })
+    React.createElement(App, { runner: runner as any, cwd: runner.cwd })
   );
+  await delay(30); // let it connect
 
-  stdin.write("say hi");
+  stdin.write("refactor the parser");
   await delay(20);
-  stdin.write("\r"); // Enter
-  await delay(80);
+  stdin.write("\r");
+  await delay(20);
+
+  expect(runner.sent).toContain("refactor the parser");
+  expect(lastFrame()).toContain("refactor the parser");
+
+  // Poke streams a tool call and a final answer.
+  runner.emit({ type: "activity", event: { phase: "start", tool: "read_file", input: { path: "p.ts" } } });
+  runner.emit({ type: "answer", message: "Refactored the parser.", final: true });
+  await delay(30);
 
   const frame = lastFrame() ?? "";
-  expect(frame).toContain("say hi");
-  expect(frame).toContain("Hello from poke-code!");
+  expect(frame).toContain("read_file");
+  expect(frame).toContain("Refactored the parser.");
   unmount();
 });

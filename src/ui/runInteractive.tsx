@@ -1,36 +1,20 @@
 import React from "react";
 import { render } from "ink";
 import { App } from "./App";
-import { agentTools } from "../tools";
-import { createProvider, loadProjectContext } from "../agent";
-import { SessionStore, type Session } from "../agent/session";
+import { PokeCodeRunner } from "../runner";
+import { loadProjectContext } from "../context";
+import { loadMemory } from "../memory";
 
-/** Launch the interactive terminal agent. Requires a TTY. */
-export async function runInteractive(opts: {
-  confirm: boolean;
-  continueSession?: boolean;
-}): Promise<void> {
-  const provider = createProvider(); // throws with a helpful message if unconfigured
+/** Launch the interactive terminal. Requires a TTY. */
+export async function runInteractive(opts: { name?: string } = {}): Promise<void> {
   const cwd = process.cwd();
+  const runner = new PokeCodeRunner({ cwd, name: opts.name }); // throws if not authenticated
   const context = loadProjectContext(cwd);
-
-  const store = new SessionStore();
-  let session: Session | null = opts.continueSession ? store.loadLatest(cwd) : null;
+  const hasMemory = loadMemory(cwd) !== null;
 
   const { waitUntilExit } = render(
-    <App
-      provider={provider}
-      tools={agentTools}
-      cwd={cwd}
-      confirm={opts.confirm}
-      context={context}
-      initialMessages={session?.messages}
-      onPersist={(messages) => {
-        session = session ?? store.newSession(cwd, provider.name, provider.model);
-        session.messages = messages;
-        store.save(session);
-      }}
-    />
+    <App runner={runner} cwd={cwd} contextFile={context?.filename ?? null} hasMemory={hasMemory} />
   );
   await waitUntilExit();
+  await runner.stop();
 }

@@ -14,11 +14,18 @@ import type { ToolDefinition, ToolContext } from "../tools/types";
 
 const PROTOCOL_VERSION = "2025-06-18";
 
+/** Emitted for every tool the remote (Poke) invokes, so a UI can render it. */
+export type ActivityEvent =
+  | { phase: "start"; tool: string; input: Record<string, unknown> }
+  | { phase: "end"; tool: string; input: Record<string, unknown>; output: string; isError: boolean };
+
 export interface McpServerOptions {
   tools: ToolDefinition[];
   cwd: string;
   name?: string;
   version?: string;
+  /** Called when the remote invokes a tool (before and after it runs). */
+  onActivity?: (event: ActivityEvent) => void;
 }
 
 interface JsonRpcRequest {
@@ -66,15 +73,21 @@ export class McpServer {
         isError: true,
       };
     }
+    const input = params?.arguments ?? {};
+    this.opts.onActivity?.({ phase: "start", tool: name, input });
     try {
-      const result = await tool.run(params?.arguments ?? {}, this.ctx);
+      const result = await tool.run(input, this.ctx);
+      const isError = result.isError ?? false;
+      this.opts.onActivity?.({ phase: "end", tool: name, input, output: result.output, isError });
       return {
         content: [{ type: "text", text: result.output }],
-        isError: result.isError ?? false,
+        isError,
       };
     } catch (e) {
+      const msg = `Tool '${name}' threw: ${(e as Error).message}`;
+      this.opts.onActivity?.({ phase: "end", tool: name, input, output: msg, isError: true });
       return {
-        content: [{ type: "text", text: `Tool '${name}' threw: ${(e as Error).message}` }],
+        content: [{ type: "text", text: msg }],
         isError: true,
       };
     }

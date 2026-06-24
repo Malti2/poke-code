@@ -2,8 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadProjectContext } from "../src/agent/context";
-import { buildSystemPrompt } from "../src/agent/prompt";
+import { loadProjectContext } from "../src/context";
 
 let dir: string;
 
@@ -34,17 +33,4 @@ test("empty context files are skipped", () => {
   writeFileSync(join(dir, "POKE.md"), "   \n  ");
   writeFileSync(join(dir, "AGENTS.md"), "real content");
   expect(loadProjectContext(dir)?.filename).toBe("AGENTS.md");
-});
-
-test("buildSystemPrompt folds the context into the prompt", () => {
-  const ctx = { filename: "POKE.md", content: "Always run the linter." };
-  const prompt = buildSystemPrompt(dir, ctx);
-  expect(prompt).toContain("Project context (POKE.md)");
-  expect(prompt).toContain("Always run the linter.");
-});
-
-test("buildSystemPrompt works without context", () => {
-  const prompt = buildSystemPrompt(dir, null);
-  expect(prompt).toContain("You are poke-code");
-  expect(prompt).not.toContain("Project context");
 });

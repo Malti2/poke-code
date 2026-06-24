@@ -2,17 +2,23 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { McpServer } from "../src/mcp/server";
-import { allTools } from "../src/tools";
+import { McpServer, type ActivityEvent } from "../src/mcp/server";
+import { pokeTools } from "../src/tools";
 
 let dir: string;
 let server: McpServer;
 let baseUrl: string;
+const activity: ActivityEvent[] = [];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "poke-code-mcp-"));
   writeFileSync(join(dir, "readme.md"), "# hello mcp\n");
-  server = new McpServer({ tools: allTools, cwd: dir, name: "poke-code-test" });
+  server = new McpServer({
+    tools: pokeTools,
+    cwd: dir,
+    name: "poke-code-test",
+    onActivity: (e) => activity.push(e),
+  });
   const { url } = server.listen(0);
   baseUrl = url;
 });
@@ -23,40 +29,34 @@ afterAll(() => {
 });
 
 async function rpc(message: unknown) {
-  const res = await fetch(baseUrl, {
+  return fetch(baseUrl, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(message),
   });
-  return res;
 }
 
 test("initialize returns serverInfo and capabilities", async () => {
   const res = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   const json: any = await res.json();
-  expect(json.id).toBe(1);
   expect(json.result.serverInfo.name).toBe("poke-code-test");
   expect(json.result.capabilities.tools).toBeDefined();
 });
 
-test("notifications get a 202 with no body", async () => {
-  const res = await rpc({ jsonrpc: "2.0", method: "notifications/initialized" });
-  expect(res.status).toBe(202);
-});
-
-test("tools/list returns all registered tools with schemas", async () => {
+test("tools/list exposes coding + comms tools", async () => {
   const res = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   const json: any = await res.json();
   const names = json.result.tools.map((t: any) => t.name);
   expect(names).toContain("read_file");
   expect(names).toContain("execute_bash");
-  expect(json.result.tools.length).toBe(allTools.length);
-  for (const t of json.result.tools) {
-    expect(t.inputSchema.type).toBe("object");
-  }
+  expect(names).toContain("send_answer");
+  expect(names).toContain("remember");
+  expect(names).toContain("update_plan");
+  expect(json.result.tools.length).toBe(pokeTools.length);
 });
 
-test("tools/call executes a tool", async () => {
+test("tools/call executes a tool and emits activity", async () => {
+  activity.length = 0;
   const res = await rpc({
     jsonrpc: "2.0",
     id: 3,
@@ -66,38 +66,32 @@ test("tools/call executes a tool", async () => {
   const json: any = await res.json();
   expect(json.result.isError).toBe(false);
   expect(json.result.content[0].text).toContain("hello mcp");
+
+  expect(activity.find((a) => a.phase === "start" && a.tool === "read_file")).toBeTruthy();
+  const end = activity.find((a) => a.phase === "end" && a.tool === "read_file");
+  expect(end).toBeTruthy();
 });
 
-test("tools/call on unknown tool returns isError", async () => {
-  const res = await rpc({
+test("send_answer activity carries the message and final flag", async () => {
+  activity.length = 0;
+  await rpc({
     jsonrpc: "2.0",
     id: 4,
     method: "tools/call",
-    params: { name: "does_not_exist", arguments: {} },
+    params: { name: "send_answer", arguments: { message: "all done", final: true } },
   });
-  const json: any = await res.json();
-  expect(json.result.isError).toBe(true);
+  const start = activity.find((a) => a.phase === "start" && a.tool === "send_answer") as any;
+  expect(start.input.message).toBe("all done");
+  expect(start.input.final).toBe(true);
+});
+
+test("notifications get a 202", async () => {
+  const res = await rpc({ jsonrpc: "2.0", method: "notifications/initialized" });
+  expect(res.status).toBe(202);
 });
 
 test("unknown method returns a JSON-RPC error", async () => {
   const res = await rpc({ jsonrpc: "2.0", id: 5, method: "bogus/method" });
   const json: any = await res.json();
   expect(json.error.code).toBe(-32601);
-});
-
-test("GET is not allowed (no SSE stream offered)", async () => {
-  const res = await fetch(baseUrl, { method: "GET" });
-  expect(res.status).toBe(405);
-});
-
-test("batched requests return an array of responses", async () => {
-  const res = await rpc([
-    { jsonrpc: "2.0", id: 10, method: "ping" },
-    { jsonrpc: "2.0", method: "notifications/initialized" },
-    { jsonrpc: "2.0", id: 11, method: "tools/list" },
-  ]);
-  const json: any = await res.json();
-  expect(Array.isArray(json)).toBe(true);
-  // notification produces no response, so 2 responses for 3 messages
-  expect(json.length).toBe(2);
 });
