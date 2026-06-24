@@ -1,5 +1,4 @@
-import { AnthropicProvider } from "./providers/anthropic";
-import { OpenAiProvider } from "./providers/openai";
+import { PokeProvider } from "./providers/poke";
 import type { LlmProvider } from "./provider";
 
 export * from "./provider";
@@ -10,35 +9,13 @@ export { loadProjectContext, CONTEXT_FILENAMES } from "./context";
 export type { ProjectContext } from "./context";
 export { SessionStore } from "./session";
 export type { Session } from "./session";
-export { AnthropicProvider } from "./providers/anthropic";
-export { OpenAiProvider } from "./providers/openai";
+export { PokeProvider } from "./providers/poke";
 export { MockProvider } from "./providers/mock";
 
 /**
- * Resolve the LLM provider from the environment. Set POKE_CODE_PROVIDER to
- * force a choice; otherwise Anthropic wins if its key is present, then OpenAI.
+ * The agent's brain is your Poke agent (poke.com). Authentication is handled by
+ * the Poke SDK via `poke-code login` or the POKE_API_KEY environment variable.
  */
 export function createProvider(): LlmProvider {
-  const forced = process.env.POKE_CODE_PROVIDER?.toLowerCase();
-
-  if (forced === "anthropic") {
-    const p = AnthropicProvider.fromEnv();
-    if (p) return p;
-    throw new Error("POKE_CODE_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set.");
-  }
-  if (forced === "openai") {
-    const p = OpenAiProvider.fromEnv();
-    if (p) return p;
-    throw new Error("POKE_CODE_PROVIDER=openai but OPENAI_API_KEY is not set.");
-  }
-
-  const anthropic = AnthropicProvider.fromEnv();
-  if (anthropic) return anthropic;
-  const openai = OpenAiProvider.fromEnv();
-  if (openai) return openai;
-
-  throw new Error(
-    "No LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY (optionally with " +
-      "ANTHROPIC_MODEL / OPENAI_MODEL / OPENAI_BASE_URL) to use the agent."
-  );
+  return PokeProvider.fromEnv();
 }

@@ -1,10 +1,11 @@
 /**
  * Provider abstraction for the agent's "brain".
  *
- * The message/content-block shapes intentionally mirror the Anthropic Messages
- * API, because that maps cleanly onto a tool-using agent loop. Other providers
- * (OpenAI-compatible, a local model, a deterministic mock for tests) just have
- * to translate to and from these shapes.
+ * The message/content-block shapes use a standard tool-using format (text and
+ * tool_use blocks from the assistant, tool_result blocks back from the user).
+ * The real provider is `PokeProvider`, which renders this state into a prompt
+ * for your Poke agent and parses its reply; `MockProvider` replays scripted
+ * responses for tests.
  */
 
 export interface TextBlock {

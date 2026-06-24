@@ -21,15 +21,11 @@ bun install
 
 ## Use it as an interactive agent
 
-The agent works with Anthropic **or** any OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio, …). Set one of:
+The agent's brain is **your Poke agent** (poke.com) — no third‑party LLM keys. Authenticate first:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...          # optional: ANTHROPIC_MODEL
-# or
-export OPENAI_API_KEY=sk-...                 # optional: OPENAI_MODEL, OPENAI_BASE_URL
+bun start login            # device-code login, or set POKE_API_KEY
 ```
-
-If both are set, Anthropic wins; force a choice with `POKE_CODE_PROVIDER=openai|anthropic`.
 
 Then start the agent:
 
@@ -41,7 +37,7 @@ bun start run "summarise this repo"                          # same as -p
 bun start -p "audit deps" --output-format json               # structured output for scripts
 ```
 
-In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve. Type `/help` for commands. For multi-step work the agent keeps a live plan (an `update_plan` tool, like Claude Code's todo list). Conversations are saved under `~/.config/poke-code/sessions`; resume the latest with `-c` / `--continue`.
+poke-code renders the task, the tool list, and the running transcript into a message to your Poke agent, asks it to choose the next tool (or give a final answer), then executes the tools locally and loops. In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve. Type `/help` for commands. For multi-step work the agent keeps a live plan (an `update_plan` tool, like Claude Code's todo list). Conversations are saved under `~/.config/poke-code/sessions`; resume the latest with `-c` / `--continue`.
 
 ### Project context
 
@@ -86,12 +82,14 @@ bun run typecheck # type-check with tsc
 
 ```
             ┌─────────────────────────────┐
- Anthropic  │  Agent loop (src/agent)      │  interactive TUI / headless
-  / OpenAI ◀│  provider · tools · prompt   │  (src/ui, src/runHeadless)
-            └──────────────┬──────────────┘
+   Poke  ◀──│  Agent loop (src/agent)      │  interactive TUI / headless
+  agent  ──▶│  PokeProvider · tools · loop │  (src/ui, src/runHeadless)
+ (brain)    └──────────────┬──────────────┘
                            │ shared tool layer (src/tools)
             ┌──────────────┴──────────────┐
    Poke ◀───│  MCP server (src/mcp)        │◀── PokeTunnel (src/tunnel)
    agent    │  JSON-RPC 2.0 over HTTP      │
             └─────────────────────────────┘
 ```
+
+Poke shows up twice: as the **brain** that drives the local loop (`PokeProvider`, via `sendMessage`), and as a **consumer** of your tools over the MCP tunnel.
