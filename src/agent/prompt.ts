@@ -1,9 +1,9 @@
-import { allTools } from "../tools";
+import { agentTools } from "../tools";
 import type { ProjectContext } from "./context";
 
 /** Build the system prompt for the coding agent. */
 export function buildSystemPrompt(cwd: string, context?: ProjectContext | null): string {
-  const toolList = allTools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
+  const toolList = agentTools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
 
   const contextSection = context
     ? `

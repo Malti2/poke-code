@@ -10,7 +10,7 @@ import { formatToolCall, previewOutput } from "./format";
 
 interface LogItem {
   key: string;
-  kind: "user" | "assistant" | "tool" | "result" | "error" | "denied" | "info";
+  kind: "user" | "assistant" | "tool" | "result" | "plan" | "error" | "denied" | "info";
   text: string;
   isError?: boolean;
 }
@@ -178,12 +178,13 @@ function renderEvent(ev: AgentEvent, push: (item: Omit<LogItem, "key">) => void)
       push({ kind: "assistant", text: ev.text });
       break;
     case "tool_call":
-      push({ kind: "tool", text: formatToolCall(ev.name, ev.input) });
+      // The plan tool renders its own checklist via its result; don't echo args.
+      if (ev.name !== "update_plan") push({ kind: "tool", text: formatToolCall(ev.name, ev.input) });
       break;
     case "tool_result":
       push({
-        kind: "result",
-        text: previewOutput(ev.output),
+        kind: ev.name === "update_plan" ? "plan" : "result",
+        text: previewOutput(ev.output, ev.name === "update_plan" ? 30 : 6),
         isError: ev.isError,
       });
       break;
@@ -224,6 +225,12 @@ const LogLine: React.FC<{ item: LogItem }> = ({ item }) => {
       return (
         <Box marginLeft={4} flexDirection="column">
           <Text color={item.isError ? "red" : "gray"}>{item.text}</Text>
+        </Box>
+      );
+    case "plan":
+      return (
+        <Box marginTop={1} marginLeft={2} flexDirection="column">
+          <Text color="magenta">{item.text}</Text>
         </Box>
       );
     case "denied":

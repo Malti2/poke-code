@@ -13,12 +13,13 @@ program
 // ── Default: interactive agent, or headless with -p ────────────────────────
 program
   .option("-p, --print <prompt>", "run a single prompt headlessly and print the result")
+  .option("--output-format <format>", "headless output format: text or json", "text")
   .option("--no-confirm", "do not ask for confirmation before running mutating tools")
-  .action(async (opts: { print?: string; confirm: boolean }) => {
+  .action(async (opts: { print?: string; outputFormat?: string; confirm: boolean }) => {
     try {
       if (opts.print) {
         const { runHeadless } = await import("./runHeadless");
-        await runHeadless(opts.print);
+        await runHeadless(opts.print, { format: opts.outputFormat === "json" ? "json" : "text" });
       } else {
         const { runInteractive } = await import("./ui/runInteractive");
         await runInteractive({ confirm: opts.confirm });
@@ -33,10 +34,11 @@ program
 program
   .command("run <prompt...>")
   .description("run a single prompt headlessly (same as -p)")
-  .action(async (prompt: string[]) => {
+  .option("--output-format <format>", "output format: text or json", "text")
+  .action(async (prompt: string[], opts: { outputFormat?: string }) => {
     try {
       const { runHeadless } = await import("./runHeadless");
-      await runHeadless(prompt.join(" "));
+      await runHeadless(prompt.join(" "), { format: opts.outputFormat === "json" ? "json" : "text" });
     } catch (e) {
       console.error(palette.err((e as Error).message));
       process.exit(1);

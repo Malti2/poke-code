@@ -37,9 +37,10 @@ Then start the agent:
 bun start                       # interactive TUI
 bun start -p "fix the bug in src/foo.ts and run the tests"   # headless, prints result
 bun start run "summarise this repo"                          # same as -p
+bun start -p "audit deps" --output-format json               # structured output for scripts
 ```
 
-In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve. Type `/help` for commands.
+In interactive mode, mutating tools (write/edit/bash) ask for confirmation. Pass `--no-confirm` to auto-approve. Type `/help` for commands. For multi-step work the agent keeps a live plan (an `update_plan` tool, like Claude Code's todo list).
 
 ### Project context
 
@@ -71,6 +72,7 @@ bun start serve --port 3000
 | `glob` | Find files by glob pattern |
 | `grep` | Search file contents by regex |
 | `execute_bash` | Run a shell command (with timeout) |
+| `update_plan` | Track a multi-step plan (local agent only) |
 
 ## Develop
 
