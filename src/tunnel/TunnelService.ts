@@ -81,13 +81,19 @@ export class TunnelService {
     const { connectionId } = loadState();
     if (!connectionId) return;
     const base = process.env.POKE_API ?? "https://poke.com/api/v1";
+    // Best-effort, and never allowed to block startup: hard 4s timeout.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
     try {
       await fetch(`${base}/mcp/connections/${connectionId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
+        signal: ctrl.signal,
       });
     } catch {
-      // non-fatal
+      // non-fatal (including the abort)
+    } finally {
+      clearTimeout(timer);
     }
     saveState({ connectionId: undefined });
   }

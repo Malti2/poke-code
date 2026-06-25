@@ -1,14 +1,15 @@
-import { Poke, isLoggedIn } from "poke";
+import { isLoggedIn } from "poke";
 import { TunnelService, type TunnelEvent } from "./tunnel/TunnelService";
 import type { ActivityEvent } from "./mcp/server";
 import { pokeTools } from "./tools";
-import { buildTaskMessage } from "./task";
+import { createUserMessageTool } from "./tools/userMessageTool";
+import { TaskInbox } from "./inbox";
 
 /**
- * Orchestrates a poke-code session: it runs the MCP server + tunnel and hands
- * tasks to your Poke agent via `sendMessage`. The work then comes back as tool
- * calls over the tunnel (which we re-emit as `activity`), and Poke talks to the
- * user by calling `send_answer` (which we re-emit as `answer`).
+ * Orchestrates a poke-code session. It runs the MCP server + tunnel and nothing
+ * else: the user's tasks flow to Poke when Poke calls the `get_user_message`
+ * tool over the tunnel, and Poke talks back by calling `send_answer`. There is
+ * no outbound message API and no separate API key — just the tunnel.
  */
 
 export type RunnerEvent =
@@ -30,23 +31,25 @@ export interface RunnerOptions {
 
 export class PokeCodeRunner {
   readonly cwd: string;
-  private readonly poke: Poke;
   private readonly tunnel: TunnelService;
+  private readonly inbox = new TaskInbox();
   private readonly listeners = new Set<Listener>();
   connectionId?: string;
 
   constructor(opts: RunnerOptions = {}) {
     this.cwd = opts.cwd ?? process.cwd();
+    // The only credential needed is the one the tunnel uses (poke login token
+    // or POKE_API_KEY). No separate outbound-message key.
     if (!opts.token && !process.env.POKE_API_KEY && !isLoggedIn())
-      throw new Error("Not authenticated with Poke. Run `poke-code login` or set POKE_API_KEY.");
+      throw new Error("Not authenticated with Poke. Run `poke-code login` first.");
 
-    this.poke = new Poke({ apiKey: opts.token });
+    const tools = [...pokeTools, createUserMessageTool(this.inbox, this.cwd)];
     this.tunnel = new TunnelService({
       cwd: this.cwd,
       name: opts.name,
       token: opts.token,
       port: opts.port,
-      tools: pokeTools,
+      tools,
       onActivity: (event) => this.handleActivity(event),
       onEvent: (event) => this.handleTunnelEvent(event),
     });
@@ -69,14 +72,18 @@ export class PokeCodeRunner {
 
   private handleActivity(event: ActivityEvent) {
     if (event.tool === "send_answer") {
-      // Render the answer once (on the call), ignore the ack.
-      if (event.phase === "start") {
+      if (event.phase === "start")
         this.emit({
           type: "answer",
           message: String((event.input as any)?.message ?? ""),
           final: (event.input as any)?.final === true,
         });
-      }
+      return;
+    }
+    if (event.tool === "get_user_message") {
+      // Poll plumbing — only surface the moment Poke actually takes a task.
+      if (event.phase === "end" && !event.output.startsWith("No new request"))
+        this.emit({ type: "status", message: "Poke picked up your task." });
       return;
     }
     this.emit({ type: "activity", event });
@@ -87,15 +94,9 @@ export class PokeCodeRunner {
     await this.tunnel.connect();
   }
 
-  /** Hand a task to Poke. The work arrives asynchronously as tool calls. */
-  async sendTask(task: string): Promise<void> {
-    this.emit({ type: "status", message: "Sending task to Poke…" });
-    try {
-      const res = await this.poke.sendMessage(buildTaskMessage(task, this.cwd));
-      if (res?.message) this.emit({ type: "status", message: res.message });
-    } catch (e) {
-      this.emit({ type: "error", message: (e as Error).message });
-    }
+  /** Queue a task; Poke picks it up via get_user_message over the tunnel. */
+  submitTask(task: string): void {
+    this.inbox.push(task);
   }
 
   async stop(): Promise<void> {

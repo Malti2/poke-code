@@ -60,7 +60,7 @@ export async function runTask(task: string, opts: RunTaskOptions = {}): Promise<
   });
 
   await runner.start();
-  await runner.sendTask(task);
+  runner.submitTask(task);
 
   const onSig = () => resolveDone();
   process.once("SIGINT", onSig);

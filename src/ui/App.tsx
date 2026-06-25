@@ -89,8 +89,9 @@ export const App: React.FC<AppProps> = ({ runner, cwd, contextFile, hasMemory })
       return;
     }
     push({ kind: "user", text });
+    push({ kind: "status", text: "Queued — waiting for Poke to pick it up over the tunnel…" });
     setWorking(true);
-    void runner.sendTask(text);
+    runner.submitTask(text);
   };
 
   useInput((value, key) => {

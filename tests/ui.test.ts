@@ -22,7 +22,7 @@ class FakeRunner {
     this.connectionId = "abc123";
     this.emit({ type: "connected", connectionId: "abc123" });
   }
-  async sendTask(t: string) {
+  submitTask(t: string) {
     this.sent.push(t);
   }
   async stop() {}
