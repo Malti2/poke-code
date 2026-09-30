@@ -2,20 +2,27 @@ import { getToken, isLoggedIn, login } from "poke";
 import { baseUrlOf, loadConfig, saveConfig, type PokeCodeConfig } from "../config";
 
 /**
- * Every outbound message is prefixed with this instruction so Poke's
- * assistant knows the user sits at a terminal: it must not reply via
- * iMessage/SMS/Telegram and must deliver its answer through the
- * `reply_to_terminal` tool instead.
+ * Context note prepended to every outbound message so Poke's assistant knows
+ * the user sits at a terminal: the terminal app cannot display normal chat
+ * replies, so the answer should be delivered through the `reply_to_terminal`
+ * tool instead.
+ *
+ * Deliberately phrased as a polite, conversational request rather than blunt
+ * orders ("your ONLY action is …", "write NOTHING …"): this message arrives
+ * over Poke's inbound channel, and commanding, prohibition-heavy phrasing
+ * reads like a prompt injection — Poke's assistant flags it as a jailbreak
+ * attempt instead of following it.
  */
-export const TERMINAL_INSTRUCTION = [
-  "User is in a terminal-only session.",
-  "Do NOT reply via iMessage/SMS/Telegram.",
-  "Write NOTHING in the chat message (leave it empty).",
-  "Your ONLY action is to call the `reply_to_terminal` tool with your full answer.",
+export const TERMINAL_NOTE = [
+  "(You're chatting with Malte through his terminal app, poke-code.",
+  "The app can't display normal chat replies, so please send your answer",
+  "with the `reply_to_terminal` tool from the poke-code integration.",
+  "Feel free to use the integration's other tools — read, write, bash, … —",
+  "to work on his machine when that helps.)",
 ].join(" ");
 
 export function buildTerminalMessage(prompt: string): string {
-  return `${TERMINAL_INSTRUCTION}\n\n${prompt}`;
+  return `${TERMINAL_NOTE}\n\n${prompt}`;
 }
 
 export class PokeError extends Error {

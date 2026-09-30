@@ -35,6 +35,12 @@ export async function startMcpServer(opts: {
   ) => Promise<{ output: string; isError: boolean }>;
   /** Port to listen on. Defaults to 0 (ephemeral). */
   port?: number;
+  /**
+   * Optional request logger (method + path of every incoming MCP request).
+   * TunnelService passes its log function so Poke's server-side calls show
+   * up in the poke-code log — invaluable when a tool call 404s.
+   */
+  log?: (msg: string) => void;
 }): Promise<McpServerHandle> {
   const createServer = () => {
     const server = new Server(
@@ -71,9 +77,13 @@ export async function startMcpServer(opts: {
     hostname: "127.0.0.1",
     port: opts.port ?? 0,
     fetch: async (req) => {
-      if (new URL(req.url).pathname !== "/mcp") {
-        return new Response("Not found", { status: 404 });
-      }
+      // This port is MCP-only: serve MCP on every path, not just /mcp.
+      // Poke's server doesn't always POST tool calls to the exact path we
+      // registered (its runtime call path can differ from the serverUrl
+      // path), and a strict path check turns those calls into 404s —
+      // surfacing on Poke's side as "error posting to endpoint: not found".
+      const pathname = new URL(req.url).pathname;
+      opts.log?.(`MCP ${req.method} ${pathname}`);
       // Stateless: fresh transport + server per request.
       const server = createServer();
       const transport = new WebStandardStreamableHTTPServerTransport();

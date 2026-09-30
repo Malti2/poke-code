@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AgentSession } from "../src/agent/session";
-import { buildTerminalMessage, TERMINAL_INSTRUCTION, type MessageSender } from "../src/poke/client";
+import { buildTerminalMessage, TERMINAL_NOTE, type MessageSender } from "../src/poke/client";
 import {
   TunnelService,
   type PermissionDecision,
@@ -48,12 +48,19 @@ function makeTunnel(permissionMode: "ask" | "auto" | "readonly" = "ask") {
   return tunnel;
 }
 
-describe("terminal instruction prefix", () => {
+describe("terminal note prefix", () => {
   test("every message is prefixed and keeps the user prompt", () => {
     const msg = buildTerminalMessage("list the files");
-    expect(msg.startsWith(TERMINAL_INSTRUCTION)).toBe(true);
+    expect(msg.startsWith(TERMINAL_NOTE)).toBe(true);
     expect(msg).toContain("list the files");
     expect(msg).toContain("reply_to_terminal");
+  });
+
+  test("note is phrased as a request, not a command (no injection-like absolutes)", () => {
+    expect(TERMINAL_NOTE).toContain("please");
+    expect(TERMINAL_NOTE).not.toMatch(/ONLY/i);
+    expect(TERMINAL_NOTE).not.toMatch(/NOTHING/i);
+    expect(TERMINAL_NOTE).not.toMatch(/Do NOT/i);
   });
 });
 
@@ -82,7 +89,7 @@ describe("ask → tool events → answer flow", () => {
 
     // 2. The outbound message carried the terminal-session instruction.
     expect(client.sent).toHaveLength(1);
-    expect(client.sent[0].startsWith(TERMINAL_INSTRUCTION)).toBe(true);
+    expect(client.sent[0].startsWith(TERMINAL_NOTE)).toBe(true);
     expect(client.sent[0]).toContain("What is the answer?");
 
     // 3. Tool events fired in order: list, bash, reply_to_terminal.

@@ -304,6 +304,49 @@ export class TunnelService {
     return this.connecting;
   }
 
+  /**
+   * Wait until Poke's server has pulled our tool list at least once.
+   *
+   * The SDK only re-syncs tools on `syncIntervalMs`, so without this the
+   * first message can reach Poke's assistant before it has ever heard of
+   * `reply_to_terminal` — the assistant then treats the instruction to call
+   * it as a jailbreak attempt. We kick off one sync immediately (via the
+   * SDK's internal syncTools, guarded because it isn't in the public
+   * typings) and otherwise wait for the interval-driven `toolsSynced` event.
+   * Times out with a warning rather than hanging the connect forever.
+   */
+  private waitForFirstToolSync(): Promise<void> {
+    const tunnel = this.tunnel;
+    if (!tunnel) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        tunnel.off("toolsSynced", onSynced);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        log("Warning: timed out waiting for Poke to sync tools; continuing anyway.");
+        done();
+      }, 60_000);
+      const onSynced = () => done();
+      tunnel.on("toolsSynced", onSynced);
+      try {
+        const syncTools = (
+          tunnel as unknown as { syncTools?: () => Promise<unknown> }
+        ).syncTools;
+        if (typeof syncTools === "function") {
+          syncTools
+            .call(tunnel)
+            .catch((e: unknown) =>
+              log(`Immediate tool sync failed, waiting for interval sync: ${e instanceof Error ? e.message : String(e)}`),
+            );
+        }
+      } catch (e: unknown) {
+        log(`Immediate tool sync failed, waiting for interval sync: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+  }
+
   async connect(passedToken?: string) {    let currentToken = await this.ensureAuth(passedToken);
     let connectionAttempts = 0;
     const MAX_AUTH_RETRIES = 1;
@@ -322,6 +365,9 @@ export class TunnelService {
           this.mcp = await startMcpServer({
             tools: this.toolManager,
             onCallTool: (name, args) => this.handleToolCall(name, args),
+            // Log every incoming MCP request (Poke's server -> tunnel ->
+            // this server) so path mismatches show up in the poke-code log.
+            log: (msg) => log(msg),
           });
           log(`Local MCP server listening at ${this.mcp.url}`);
         }
@@ -331,6 +377,8 @@ export class TunnelService {
           token,
           name: "poke-code",
           cleanupOnStop: true,
+          // Same re-sync cadence as the official `poke tunnel` CLI.
+          syncIntervalMs: 30_000,
         });
 
         // Set up a "canary" to detect immediate auth failures
@@ -343,8 +391,24 @@ export class TunnelService {
           this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
           log(`Tunnel connection established. ID: ${info.connectionId}`);
           this.connected = true;
-          isResolved = true;
-          resolve();
+          // Don't resolve yet: Poke's assistant must first learn our tool
+          // list (incl. `reply_to_terminal`). The SDK only re-syncs on an
+          // interval, so a message sent before the first sync reaches an
+          // assistant that has never heard of our tools.
+          void this.waitForFirstToolSync().then(
+            () => {
+              if (!isResolved && !isAuthFailure) {
+                isResolved = true;
+                resolve();
+              }
+            },
+            (e: unknown) => {
+              if (!isResolved && !isAuthFailure) {
+                isAuthFailure = true;
+                reject(e instanceof Error ? e : new Error(String(e)));
+              }
+            },
+          );
         });
 
         this.tunnel.on("disconnected", () => {

@@ -60,4 +60,59 @@ describe("local MCP server", () => {
       await handle.stop();
     }
   });
+
+  test("serves MCP on any path, not just /mcp", async () => {
+    // Poke's server doesn't always POST tool calls to the exact path we
+    // registered — a strict path check turned those calls into 404s
+    // ("error posting to endpoint: not found"). This port is MCP-only,
+    // so every path must speak MCP.
+    const tools = new ToolManager({ onReplyToTerminal: () => {} });
+    const handle = await startMcpServer({
+      tools,
+      onCallTool: async (name) => ({ output: `called ${name}`, isError: false }),
+    });
+    try {
+      const rootUrl = handle.url.replace(/\/mcp$/, "/");
+      for (const url of [handle.url, rootUrl]) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/list",
+            params: {},
+          }),
+        });
+        expect(res.status).toBe(200);
+        const text = await res.text();
+        expect(text).toContain("reply_to_terminal");
+      }
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  test("logs incoming request paths when a logger is passed", async () => {
+    const tools = new ToolManager({ onReplyToTerminal: () => {} });
+    const seen: string[] = [];
+    const handle = await startMcpServer({
+      tools,
+      onCallTool: async (name) => ({ output: `called ${name}`, isError: false }),
+      log: (msg) => seen.push(msg),
+    });
+    try {
+      await fetch(handle.url.replace(/\/mcp$/, "/"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(seen.some((m) => m.includes("POST /"))).toBe(true);
+    } finally {
+      await handle.stop();
+    }
+  });
 });
