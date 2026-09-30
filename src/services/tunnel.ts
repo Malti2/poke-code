@@ -1,9 +1,11 @@
 import { PokeTunnel, login, isLoggedIn, getToken } from "poke";
-import { ToolManager } from "../tools/ToolManager";
-import { QueryEngine } from "../QueryEngine";
+import { ToolManager } from "../tools/manager";
+import type { ToolDefinition } from "../tools/types";
+import { startMcpServer, type McpServerHandle } from "../mcp/server";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { loadConfig, permissionModeOf, type PermissionMode } from "../config";
 
 interface State {
   connectionId?: string;
@@ -19,22 +21,163 @@ function log(msg: string) {
   console.log(`[${ts}] ${msg}`);
 }
 
+export interface ToolCallEvent {
+  type: "tool-start" | "tool-end";
+  name: string;
+  args: Record<string, unknown>;
+  output?: string;
+  isError?: boolean;
+  ms?: number;
+}
+
+export interface PermissionRequest {
+  tool: ToolDefinition;
+  args: Record<string, unknown>;
+}
+
+export type PermissionDecision = "allow" | "deny" | "allow-session";
+
+/**
+ * Manages the Poke tunnel connection and is the single entry point for
+ * incoming tool calls from Poke's assistant.
+ *
+ * - `list_tools` is served from the ToolManager registry (single source of truth).
+ * - `handleToolCall` executes a tool locally with permission checks and emits
+ *   tool-start/tool-end events so the TUI can render live ToolCards.
+ * - `reply_to_terminal` is registered like any other tool; its handler
+ *   resolves the pending `ask()` promise in AgentSession.
+ */
 export class TunnelService {
-  private queryEngine: QueryEngine;
   private toolManager: ToolManager;
   private tunnel?: PokeTunnel;
+  private mcp?: McpServerHandle;
+  private connected = false;
+  private connecting: Promise<void> | null = null;
+  private toolListeners = new Set<(e: ToolCallEvent) => void>();
+  private permissionHandler: ((req: PermissionRequest) => Promise<PermissionDecision>) | null = null;
+  private permissionMode: PermissionMode;
+  private sessionAllowedTools = new Set<string>();
+  private onReplyToTerminal: ((answer: string) => void) | null = null;
 
-  constructor() {
-    this.toolManager = new ToolManager();
-    this.queryEngine = new QueryEngine();
+  constructor(opts: { permissionMode?: PermissionMode } = {}) {
+    this.permissionMode = opts.permissionMode ?? permissionModeOf(loadConfig());
+    this.toolManager = new ToolManager({
+      onReplyToTerminal: (answer) => this.onReplyToTerminal?.(answer),
+    });
   }
+
+  // ------------------------------------------------------------------ wiring
+
+  /** Live tool-call events for the TUI. */
+  onToolEvent(listener: (e: ToolCallEvent) => void): () => void {
+    this.toolListeners.add(listener);
+    return () => this.toolListeners.delete(listener);
+  }
+
+  private emitToolEvent(e: ToolCallEvent): void {
+    for (const l of this.toolListeners) {
+      try {
+        l(e);
+      } catch {
+        // Listener errors must not break tool execution.
+      }
+    }
+  }
+
+  /** Set by the TUI (or headless callers) to approve write/bash tool calls. */
+  setPermissionHandler(handler: (req: PermissionRequest) => Promise<PermissionDecision>): void {
+    this.permissionHandler = handler;
+  }
+
+  setPermissionMode(mode: PermissionMode): void {
+    this.permissionMode = mode;
+  }
+
+  /** Called by AgentSession: resolves the pending ask() with Poke's answer. */
+  setReplyHandler(handler: (answer: string) => void): void {
+    this.onReplyToTerminal = handler;
+  }
+
+  clearSessionPermissions(): void {
+    this.sessionAllowedTools.clear();
+  }
+
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
+  /** The advertised tool registry (single source of truth). */
+  listTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+    return this.toolManager.list().map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    }));
+  }
+
+  // ------------------------------------------------------- tool execution
+
+  /**
+   * Execute one tool call from Poke's assistant: permission check, run,
+   * events. This is the seam the (mocked or live) transport invokes.
+   */
+  async handleToolCall(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<{ output: string; isError: boolean }> {
+    const tool = this.toolManager.get(toolName);
+    if (!tool) {
+      const output = `Error: unknown tool "${toolName}".`;
+      this.emitToolEvent({ type: "tool-start", name: toolName, args });
+      this.emitToolEvent({ type: "tool-end", name: toolName, args, output, isError: true, ms: 0 });
+      return { output, isError: true };
+    }
+
+    const decision = await this.checkPermission(tool, args);
+    this.emitToolEvent({ type: "tool-start", name: toolName, args });
+    const started = Date.now();
+
+    let output: string;
+    let isError = false;
+    if (decision === "deny") {
+      output = `Error: permission denied by user for tool "${toolName}". Ask the user or proceed without it.`;
+      isError = true;
+    } else {
+      const result = await this.toolManager.execute(toolName, args, { cwd: process.cwd() });
+      output = result.output;
+      isError = result.isError ?? false;
+    }
+
+    const ms = Date.now() - started;
+    this.emitToolEvent({ type: "tool-end", name: toolName, args, output, isError, ms });
+    return { output, isError };
+  }
+
+  private async checkPermission(
+    tool: ToolDefinition,
+    args: Record<string, unknown>,
+  ): Promise<PermissionDecision> {
+    if (tool.permission === "read") return "allow";
+    if (this.permissionMode === "readonly") return "deny";
+    if (this.permissionMode === "auto") return "allow";
+    if (this.sessionAllowedTools.has(tool.name)) return "allow";
+    if (!this.permissionHandler) return "allow"; // non-interactive default
+    const decision = await this.permissionHandler({ tool, args });
+    if (decision === "allow-session") {
+      this.sessionAllowedTools.add(tool.name);
+      return "allow";
+    }
+    return decision;
+  }
+
+  // ------------------------------------------------------- connection
 
   private loadState(): State {
     try {
       if (existsSync(STATE_PATH)) {
         return JSON.parse(readFileSync(STATE_PATH, "utf-8"));
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
     return {};
@@ -47,7 +190,7 @@ export class TunnelService {
       }
       writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
     } catch (e) {
-      console.error("🚨 Error saving state:", e);
+      console.error("Error saving state:", e);
     }
   }
 
@@ -58,21 +201,19 @@ export class TunnelService {
   }
 
   private async triggerManualLogin(): Promise<string> {
-    log("🔐 Triggering Poke login flow...");
-    
-    // login() returns a Promise that resolves when the user finishes the flow on the web.
-    // We must await it to ensure we don't proceed until the token is actually available.
+    log("Triggering Poke login flow...");
+
     await login({
       openBrowser: true,
       onCode: ({ userCode, loginUrl }) => {
         console.error("\n============================================================");
-        console.error(" 🔑 POKE AUTHENTICATION REQUIRED");
+        console.error(" POKE AUTHENTICATION REQUIRED");
         console.error("============================================================");
         console.error(`\n  1. Go to: ${loginUrl}`);
         console.error(`  2. Enter code: ${userCode}`);
         console.error("\n============================================================\n");
-        
-        log("🌐 Opening browser (if supported)...");
+
+        log("Opening browser (if supported)...");
       },
     });
 
@@ -88,31 +229,36 @@ export class TunnelService {
 
   private async ensureAuth(passedToken?: string): Promise<string> {
     const state = this.loadState();
-    
+
     // 1. Explicitly passed token
     if (passedToken) {
-      log("🔑 Using explicitly passed token.");
+      log("Using explicitly passed token.");
       this.saveState({ ...state, token: passedToken });
       return passedToken;
     }
 
-    // 2. State-stored token
-    if (state.token) {
-      log("🔑 Using token from state.json.");
-      return state.token;
+    // 2. V2 API key from env or config (preferred for the tunnel too)
+    if (process.env.POKE_API_KEY) {
+      log("Using token from POKE_API_KEY environment variable.");
+      return process.env.POKE_API_KEY;
+    }
+    const apiKey = loadConfig().apiKey;
+    if (apiKey) {
+      log("Using token from config file.");
+      return apiKey;
     }
 
-    // 3. Environment variable
-    if (process.env.POKE_API_KEY) {
-      log("🔑 Using token from POKE_API_KEY environment variable.");
-      return process.env.POKE_API_KEY;
+    // 3. State-stored token
+    if (state.token) {
+      log("Using token from state.json.");
+      return state.token;
     }
 
     // 4. SDK's internal login state
     if (isLoggedIn()) {
       const token = getToken();
       if (token) {
-        log("🔑 Using token from SDK login state.");
+        log("Using token from SDK login state.");
         this.saveState({ ...state, token });
         return token;
       }
@@ -135,7 +281,7 @@ export class TunnelService {
 
     if (ids.size === 0) return;
 
-    log(`🧹 Cleaning up ${ids.size} old connection(s)…`);
+    log(`Cleaning up ${ids.size} old connection(s)…`);
 
     for (const id of ids) {
       try {
@@ -151,8 +297,21 @@ export class TunnelService {
     this.saveState({ ...state, connectionId: undefined, connectionHistory: [] });
   }
 
-  async connect(passedToken?: string) {
-    let currentToken = await this.ensureAuth(passedToken);
+  /**
+   * Ensure the tunnel is connected, starting it once and reusing it.
+   * Concurrent callers share the same in-flight attempt.
+   */
+  ensureConnected(passedToken?: string): Promise<void> {
+    if (this.connected) return Promise.resolve();
+    if (!this.connecting) {
+      this.connecting = this.connect(passedToken).finally(() => {
+        this.connecting = null;
+      });
+    }
+    return this.connecting;
+  }
+
+  async connect(passedToken?: string) {    let currentToken = await this.ensureAuth(passedToken);
     let connectionAttempts = 0;
     const MAX_AUTH_RETRIES = 1;
 
@@ -160,41 +319,24 @@ export class TunnelService {
       return new Promise(async (resolve, reject) => {
         let isResolved = false;
         let isAuthFailure = false;
-        
+
         await this.cleanupStaleConnections(token);
 
-        const handleRequest = async (method: string, params: any) => {
-          switch (method) {
-            case "list_tools":
-              return {
-                tools: [
-                  { name: "read_file", description: "Read content from a file" },
-                  { name: "write_file", description: "Write content to a file" },
-                  { name: "list_files", description: "List files in a directory" },
-                  { name: "search_files", description: "Search for files by pattern" },
-                  { name: "execute_bash", description: "Execute a bash command" }
-                ]
-              };
-            case "call_tool":
-              log(`📨 Executing tool: ${params.name}`);
-              return await this.toolManager.executeTool(params.name, params.arguments);
-            case "query":
-              log(`📨 Received query: ${params.prompt.substring(0, 50)}...`);
-              const queryResults: any[] = [];
-              for await (const step of this.queryEngine.processQuery(params.prompt)) {
-                queryResults.push(step);
-              }
-              return queryResults;
-            default:
-              throw new Error(`Method ${method} not found`);
-          }
-        };
+        // Start the local MCP server first. Poke's server reaches our tools
+        // through the reverse tunnel pointed at this URL — this is what lets
+        // Poke's assistant actually call tools on this machine.
+        if (!this.mcp) {
+          this.mcp = await startMcpServer({
+            tools: this.toolManager,
+            onCallTool: (name, args) => this.handleToolCall(name, args),
+          });
+          log(`Local MCP server listening at ${this.mcp.url}`);
+        }
 
         this.tunnel = new PokeTunnel({
-          url: "local://",
+          url: this.mcp.url,
           token,
           name: "poke-code",
-          autoReconnect: true,
           cleanupOnStop: true,
         });
 
@@ -206,19 +348,21 @@ export class TunnelService {
           const history = state.connectionHistory || [];
           if (info.connectionId) history.push(info.connectionId);
           this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
-          log(`✅ Tunnel connection established. ID: ${info.connectionId}`);
+          log(`Tunnel connection established. ID: ${info.connectionId}`);
+          this.connected = true;
           isResolved = true;
           resolve();
         });
 
         this.tunnel.on("disconnected", () => {
+          this.connected = false;
           if (isAuthFailure) return;
-          log("🔌 Tunnel disconnected.");
+          log("Tunnel disconnected.");
           const duration = Date.now() - connectionStartTime;
-          
+
           // If we disconnect instantly (< 3s) AND haven't established connection yet, it's likely an auth issue
           if (!isResolved && duration < 3000) {
-            log("⚠️ Immediate disconnect detected. Current token may be invalid.");
+            log("Immediate disconnect detected. Current token may be invalid.");
             isAuthFailure = true;
             this.tunnel?.stop();
             reject(new Error("AUTH_INVALID"));
@@ -227,7 +371,7 @@ export class TunnelService {
 
         this.tunnel.on("error", (err) => {
           if (isAuthFailure) return;
-          log(`🚨 Tunnel error: ${err.message}`);
+          log(`Tunnel error: ${err.message}`);
           if (err.message.includes("401") || err.message.toLowerCase().includes("auth")) {
             isAuthFailure = true;
             this.tunnel?.stop();
@@ -235,20 +379,14 @@ export class TunnelService {
           }
         });
 
-        this.tunnel.on("toolsSynced", ({ toolCount }) => log(`🔄 Synced ${toolCount} tools to Poke.`));
+        this.tunnel.on("toolsSynced", ({ toolCount }) =>
+          log(`Synced ${toolCount} tools to Poke.`),
+        );
 
-        this.tunnel.on("execute_tool", async ({ toolName, args }) => {
-          return await handleRequest("call_tool", { name: toolName, arguments: args });
-        });
-
-        this.tunnel.on("query", async ({ prompt }) => {
-          return await handleRequest("query", { prompt });
-        });
-
-        log("🌴 Starting Poke Tunnel...");
+        log("Starting Poke Tunnel...");
         try {
           await this.tunnel.start();
-        } catch (e: any) {
+        } catch (e: unknown) {
           if (!isResolved && !isAuthFailure) reject(e);
         }
       });
@@ -259,18 +397,34 @@ export class TunnelService {
         await startTunnel(currentToken);
         // If we reach here, it connected successfully
         break;
-      } catch (error: any) {
-        if (error.message === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
-          log("🔄 Clearing invalid token and re-authenticating...");
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
+          log("Clearing invalid token and re-authenticating...");
           this.clearToken();
           connectionAttempts++;
           currentToken = await this.triggerManualLogin();
           // The loop will continue and try to startTunnel again with the new currentToken
         } else {
-          console.error(`\n🚨 CRITICAL FAILURE: ${error.message || error}`);
+          console.error(`\nCRITICAL FAILURE: ${msg}`);
           process.exit(1);
         }
       }
     }
+  }
+
+  async stop(): Promise<void> {
+    try {
+      await this.tunnel?.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      await this.mcp?.stop();
+    } catch {
+      // ignore
+    }
+    this.mcp = undefined;
+    this.connected = false;
   }
 }
