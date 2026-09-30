@@ -26,7 +26,7 @@ program
 program
   .command("tunnel")
   .description("Start the Poke tunnel standalone (exposes local tools to Poke)")
-  .argument("[token]", "Authentication token (falls back to POKE_API_KEY / config / login)")
+  .argument("[token]", "Login token override (falls back to Poke login / device flow)")
   .action(async (token: string | undefined) => {
     const tunnel = new TunnelService();
     // Non-interactive: approve tool calls automatically, but say so loudly.

@@ -1,4 +1,4 @@
-import { PokeTunnel, login, isLoggedIn, getToken } from "poke";
+import { PokeTunnel, login, logout, isLoggedIn, getToken } from "poke";
 import { ToolManager } from "../tools/manager";
 import type { ToolDefinition } from "../tools/types";
 import { startMcpServer, type McpServerHandle } from "../mcp/server";
@@ -10,7 +10,11 @@ import { loadConfig, permissionModeOf, type PermissionMode } from "../config";
 interface State {
   connectionId?: string;
   connectionHistory?: string[];
-  token?: string;
+}
+
+export interface LoginCodeInfo {
+  userCode: string;
+  loginUrl: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "poke-code");
@@ -58,6 +62,7 @@ export class TunnelService {
   private permissionMode: PermissionMode;
   private sessionAllowedTools = new Set<string>();
   private onReplyToTerminal: ((answer: string) => void) | null = null;
+  private loginCodeHandler: ((info: LoginCodeInfo | null) => void) | null = null;
 
   constructor(opts: { permissionMode?: PermissionMode } = {}) {
     this.permissionMode = opts.permissionMode ?? permissionModeOf(loadConfig());
@@ -91,6 +96,11 @@ export class TunnelService {
 
   setPermissionMode(mode: PermissionMode): void {
     this.permissionMode = mode;
+  }
+
+  /** Set by the TUI to render the device-login code as a proper screen. */
+  setLoginCodeHandler(handler: ((info: LoginCodeInfo | null) => void) | null) {
+    this.loginCodeHandler = handler;
   }
 
   /** Called by AgentSession: resolves the pending ask() with Poke's answer. */
@@ -194,77 +204,60 @@ export class TunnelService {
     }
   }
 
-  private clearToken() {
-    const state = this.loadState();
-    delete state.token;
-    this.saveState(state);
-  }
-
   private async triggerManualLogin(): Promise<string> {
     log("Triggering Poke login flow...");
 
-    await login({
-      openBrowser: true,
-      onCode: ({ userCode, loginUrl }) => {
-        console.error("\n============================================================");
-        console.error(" POKE AUTHENTICATION REQUIRED");
-        console.error("============================================================");
-        console.error(`\n  1. Go to: ${loginUrl}`);
-        console.error(`  2. Enter code: ${userCode}`);
-        console.error("\n============================================================\n");
-
-        log("Opening browser (if supported)...");
-      },
-    });
+    try {
+      await login({
+        openBrowser: true,
+        onCode: ({ userCode, loginUrl }) => {
+          if (this.loginCodeHandler) {
+            this.loginCodeHandler({ userCode, loginUrl });
+          } else {
+            console.error("\n============================================================");
+            console.error(" POKE AUTHENTICATION REQUIRED");
+            console.error("============================================================");
+            console.error(`\n  1. Go to: ${loginUrl}`);
+            console.error(`  2. Enter code: ${userCode}`);
+            console.error("\n============================================================\n");
+            log("Opening browser (if supported)...");
+          }
+        },
+      });
+    } finally {
+      this.loginCodeHandler?.(null);
+    }
 
     const token = getToken();
     if (token) {
-      const state = this.loadState();
-      this.saveState({ ...state, token });
       return token;
-    } else {
-      throw new Error("Login completed but no token was found.");
     }
+    throw new Error("Login completed but no token was found.");
   }
 
+  /**
+   * Tunnel auth uses the SDK user-login token (persisted in
+   * ~/.config/poke/credentials.json), exactly like the official
+   * `poke tunnel` CLI. The V2 API key is NOT valid here — the server
+   * answers HTTP 403 for it.
+   */
   private async ensureAuth(passedToken?: string): Promise<string> {
-    const state = this.loadState();
-
-    // 1. Explicitly passed token
+    // 1. Explicitly passed token (login-token override)
     if (passedToken) {
       log("Using explicitly passed token.");
-      this.saveState({ ...state, token: passedToken });
       return passedToken;
     }
 
-    // 2. V2 API key from env or config (preferred for the tunnel too)
-    if (process.env.POKE_API_KEY) {
-      log("Using token from POKE_API_KEY environment variable.");
-      return process.env.POKE_API_KEY;
-    }
-    const apiKey = loadConfig().apiKey;
-    if (apiKey) {
-      log("Using token from config file.");
-      return apiKey;
-    }
-
-    // 3. State-stored token
-    if (state.token) {
-      log("Using token from state.json.");
-      return state.token;
-    }
-
-    // 4. SDK's internal login state
+    // 2. SDK login state
     if (isLoggedIn()) {
       const token = getToken();
       if (token) {
-        log("Using token from SDK login state.");
-        this.saveState({ ...state, token });
+        log("Using token from Poke login state.");
         return token;
       }
     }
 
-    // 5. Trigger login
+    // 3. Device flow
     return await this.triggerManualLogin();
   }
 
@@ -415,19 +408,10 @@ export class TunnelService {
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
-          // With a user-provided API key (env/config), the console device
-          // flow would corrupt the TUI — fail with actionable guidance
-          // instead so the user can fix the key.
-          if (process.env.POKE_API_KEY || loadConfig().apiKey) {
-            throw new Error(
-              "Poke rejected your API key (HTTP 401/403).\n" +
-                "Make sure you pasted a V2 Kitchen key from https://poke.com/kitchen/api-keys,\n" +
-                "then replace it with:\n" +
-                "  poke-code config set apiKey <your-key>",
-            );
-          }
-          log("Clearing invalid token and re-authenticating...");
-          this.clearToken();
+          // The login token was rejected — drop it and run the device flow
+          // again (surfaces the login screen in the TUI via the handler).
+          log("Login token rejected, re-authenticating...");
+          await logout().catch(() => {});
           connectionAttempts++;
           currentToken = await this.triggerManualLogin();
           // The loop will continue and try to startTunnel again with the new currentToken

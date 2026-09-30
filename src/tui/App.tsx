@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { theme } from "./theme";
 import { Header, StatusBar } from "./components/Chrome";
 import { AssistantMessage, ErrorMessage, SystemMessage, UserMessage } from "./components/Messages";
@@ -7,7 +7,8 @@ import { formatToolCall, ToolCard, type ToolEntry } from "./components/ToolCard"
 import { InputBox } from "./components/InputBox";
 import { filterSlashCommands, SlashMenu, SLASH_COMMANDS } from "./components/SlashMenu";
 import { PermissionPrompt, type PendingPermission } from "./components/PermissionPrompt";
-import { TunnelService, type PermissionDecision } from "../services/tunnel";
+import { Spinner } from "./components/Spinner";
+import { TunnelService, type LoginCodeInfo, type PermissionDecision } from "../services/tunnel";
 import { AgentSession } from "../agent/session";
 import { PokeClient } from "../poke/client";
 import { loadConfig, permissionModeOf, redactConfig } from "../config";
@@ -25,6 +26,43 @@ interface PendingPermissionState extends PendingPermission {
 
 let idCounter = 0;
 const uid = () => `e${++idCounter}`;
+
+/** Fullscreen device-login screen shown while the tunnel waits for Poke auth. */
+function PokeLoginScreen({ info }: { info: LoginCodeInfo }) {
+  const { stdout } = useStdout();
+  const height = stdout?.rows ? Math.max(stdout.rows - 2, 10) : undefined;
+  return (
+    <Box flexDirection="column" height={height} justifyContent="center" alignItems="center">
+      <Box
+        borderStyle="round"
+        borderColor={theme.brand}
+        paddingX={4}
+        paddingY={2}
+        width={62}
+        flexDirection="column"
+        alignItems="center"
+      >
+        <Text bold>
+          <Text>🌴 </Text>
+          <Text>Connect your Poke account</Text>
+        </Text>
+        <Box marginTop={1}>
+          <Text dimColor>One-time login so poke-code can open the tool tunnel.</Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column" alignItems="center">
+          <Text dimColor>Open this page and enter the code:</Text>
+          <Text color={theme.brand}>{info.loginUrl}</Text>
+          <Box marginTop={1} borderStyle="round" borderColor={theme.brand} paddingX={4} paddingY={1}>
+            <Text bold>{info.userCode}</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Spinner label="Waiting for approval…" />
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+  );
+}
 
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
   const s = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
@@ -57,6 +95,7 @@ export function App() {
   const [pendingPermission, setPendingPermission] = useState<PendingPermissionState | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
   const [connected, setConnected] = useState(false);
+  const [loginCode, setLoginCode] = useState<LoginCodeInfo | null>(null);
 
   const { tunnel, session } = useMemo(() => {
     const t = new TunnelService();
@@ -114,9 +153,12 @@ export function App() {
       });
     });
 
+    tunnel.setLoginCodeHandler(setLoginCode);
+
     const timer = setInterval(() => setConnected(tunnel.isConnected), 2000);
     return () => {
       clearInterval(timer);
+      tunnel.setLoginCodeHandler(null);
       off();
     };
   }, [tunnel]);
@@ -351,35 +393,41 @@ export function App() {
   });
 
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Header cwd={process.cwd()} />
-      <Box flexDirection="column" flexGrow={1}>
-        {entries.map((e) => {
-          switch (e.kind) {
-            case "user":
-              return <UserMessage key={e.id} text={e.text} />;
-            case "assistant":
-              return <AssistantMessage key={e.id} text={e.text} />;
-            case "system":
-              return <SystemMessage key={e.id} text={e.text} />;
-            case "error":
-              return <ErrorMessage key={e.id} text={e.text} />;
-            case "tool":
-              return (
-                <ToolCard
-                  key={e.entry.id}
-                  entry={e.entry}
-                  expanded={e.entry.status === "error"}
-                />
-              );
-          }
-        })}
-      </Box>
-      {pendingPermission && <PermissionPrompt pending={pendingPermission} />}
-      {slashOpen && <SlashMenu commands={slashMatches} selected={slashIndex} />}
-      <InputBox value={input} cursor={cursor} waiting={waiting} waitingSecs={waitSecs} />
-      <StatusBar connected={connected} permissionMode={permissionModeOf(loadConfig())} />
-      <Text color={theme.faint}> </Text>
-    </Box>
+    <>
+      {loginCode ? (
+        <PokeLoginScreen info={loginCode} />
+      ) : (
+        <Box flexDirection="column" paddingX={1} paddingY={1}>
+          <Header cwd={process.cwd()} />
+          <Box flexDirection="column" flexGrow={1}>
+            {entries.map((e) => {
+              switch (e.kind) {
+                case "user":
+                  return <UserMessage key={e.id} text={e.text} />;
+                case "assistant":
+                  return <AssistantMessage key={e.id} text={e.text} />;
+                case "system":
+                  return <SystemMessage key={e.id} text={e.text} />;
+                case "error":
+                  return <ErrorMessage key={e.id} text={e.text} />;
+                case "tool":
+                  return (
+                    <ToolCard
+                      key={e.entry.id}
+                      entry={e.entry}
+                      expanded={e.entry.status === "error"}
+                    />
+                  );
+              }
+            })}
+          </Box>
+          {pendingPermission && <PermissionPrompt pending={pendingPermission} />}
+          {slashOpen && <SlashMenu commands={slashMatches} selected={slashIndex} />}
+          <InputBox value={input} cursor={cursor} waiting={waiting} waitingSecs={waitSecs} />
+          <StatusBar connected={connected} permissionMode={permissionModeOf(loadConfig())} />
+          <Text color={theme.faint}> </Text>
+        </Box>
+      )}
+    </>
   );
 }

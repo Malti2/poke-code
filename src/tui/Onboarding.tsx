@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
+import { isLoggedIn, login } from "poke";
 import { CONFIG_PATH, setConfigValue } from "../config";
 import { theme } from "./theme";
 import { Spinner } from "./components/Spinner";
@@ -18,41 +19,7 @@ export function validateApiKey(raw: string): string | null {
   return null;
 }
 
-export type KeyCheckVerdict = "ok" | "invalid" | "unknown";
-
-/**
- * Map an HTTP status from the key probe to a verdict. Exported for tests.
- * Only 401/403 mean "bad key"; anything else (even 404) means the auth
- * layer let the request through, and null means the network failed.
- */
-export function classifyKeyCheck(status: number | null): KeyCheckVerdict {
-  if (status === 401 || status === 403) return "invalid";
-  if (status === null) return "unknown";
-  return "ok";
-}
-
-/**
- * Probe the key against Poke's API (list MCP connections — no side effects).
- * Never throws; network failures yield "unknown".
- */
-export async function verifyApiKey(key: string): Promise<KeyCheckVerdict> {
-  const base = (process.env.POKE_API ?? "https://poke.com/api/v1").replace(/\/+$/, "");
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10000);
-  try {
-    const res = await fetch(`${base}/mcp/connections`, {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: ctrl.signal,
-    });
-    return classifyKeyCheck(res.status);
-  } catch {
-    return "unknown";
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-type Phase = "welcome" | "key" | "done";
+type Phase = "welcome" | "key" | "account" | "done";
 
 const CARD_WIDTH = 62;
 
@@ -66,15 +33,15 @@ function WelcomeStep() {
         <Text dimColor>Terminal coding assistant · powered by Poke</Text>
       </Box>
       <Box marginTop={2} flexDirection="column">
-        <Text>Setup takes about 30 seconds:</Text>
+        <Text>Setup takes about a minute:</Text>
         <Box marginTop={1} flexDirection="column" paddingLeft={2}>
           <Text>
             <Text color={theme.brand} bold>1 · </Text>
-            <Text>Get a V2 API key</Text>
+            <Text>Paste your V2 API key</Text>
           </Text>
           <Text>
             <Text color={theme.brand} bold>2 · </Text>
-            <Text>Paste it on the next screen</Text>
+            <Text>Connect your Poke account (one-time, for the tool tunnel)</Text>
           </Text>
           <Text>
             <Text color={theme.brand} bold>3 · </Text>
@@ -91,15 +58,7 @@ function WelcomeStep() {
   );
 }
 
-function KeyStep({
-  value,
-  error,
-  verifying,
-}: {
-  value: string;
-  error: string | null;
-  verifying: boolean;
-}) {
+function KeyStep({ value, error }: { value: string; error: string | null }) {
   return (
     <Box flexDirection="column">
       <Text bold>
@@ -122,9 +81,7 @@ function KeyStep({
         </Text>
       </Box>
       <Box marginTop={1} minHeight={1}>
-        {verifying ? (
-          <Spinner label="Checking key with Poke…" />
-        ) : error ? (
+        {error ? (
           <Text color={theme.error}>✗ {error}</Text>
         ) : (
           <Text dimColor>Enter to confirm · Esc to go back · input is hidden</Text>
@@ -134,14 +91,59 @@ function KeyStep({
   );
 }
 
+function AccountStep({
+  info,
+  error,
+}: {
+  info: { userCode: string; loginUrl: string } | null;
+  error: string | null;
+}) {
+  return (
+    <Box flexDirection="column" alignItems="center">
+      <Text bold>
+        <Text>🌴 </Text>
+        <Text>Connect your Poke account</Text>
+      </Text>
+      <Box marginTop={1}>
+        <Text dimColor>The tool tunnel needs a one-time login — your browser should open.</Text>
+      </Box>
+      {info ? (
+        <Box marginTop={1} flexDirection="column" alignItems="center">
+          <Text dimColor>Open this page and enter the code:</Text>
+          <Text color={theme.brand}>{info.loginUrl}</Text>
+          <Box marginTop={1} borderStyle="round" borderColor={theme.brand} paddingX={4} paddingY={1}>
+            <Text bold>{info.userCode}</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Spinner label="Waiting for approval…" />
+          </Box>
+        </Box>
+      ) : (
+        <Box marginTop={1}>
+          <Spinner label={error ? "Retrying…" : "Preparing login…"} />
+        </Box>
+      )}
+      {error && (
+        <Box marginTop={1}>
+          <Text color={theme.error}>✗ {error}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text dimColor>{error ? "Enter to retry · " : ""}Esc to go back</Text>
+      </Box>
+    </Box>
+  );
+}
+
 function DoneStep() {
   return (
     <Box flexDirection="column" alignItems="center">
       <Text bold color={theme.success}>
-        ✓ API key saved
+        ✓ All set
       </Text>
-      <Box marginTop={1}>
-        <Text dimColor>Stored in {CONFIG_PATH} (0600)</Text>
+      <Box marginTop={1} flexDirection="column" alignItems="center">
+        <Text dimColor>API key saved · Poke account connected</Text>
+        <Text dimColor>Key stored in {CONFIG_PATH} (0600)</Text>
       </Box>
       <Box marginTop={2}>
         <Text>
@@ -163,7 +165,9 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
   const [phase, setPhase] = useState<Phase>("welcome");
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [verifying, setVerifying] = useState(false);
+  const [loginInfo, setLoginInfo] = useState<{ userCode: string; loginUrl: string } | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginAttempt, setLoginAttempt] = useState(0);
 
   useEffect(() => {
     if (phase !== "done") return;
@@ -171,10 +175,52 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
     return () => clearTimeout(t);
   }, [phase, onComplete]);
 
+  // Device login for the tool tunnel (skipped when already logged in).
+  useEffect(() => {
+    if (phase !== "account") return;
+    let cancelled = false;
+    setLoginInfo(null);
+    setLoginError(null);
+    (async () => {
+      try {
+        if (!isLoggedIn()) {
+          await login({
+            openBrowser: true,
+            onCode: (info) => {
+              if (!cancelled) setLoginInfo(info);
+            },
+          });
+        }
+        if (!cancelled) {
+          setLoginInfo(null);
+          setPhase("done");
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setLoginInfo(null);
+          setLoginError(e instanceof Error ? e.message : String(e));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, loginAttempt]);
+
   useInput((input, key) => {
-    if (verifying) return; // ignore input while the key is being checked
     if (phase === "welcome") {
       if (key.return) setPhase("key");
+      return;
+    }
+    if (phase === "account") {
+      if (key.escape) {
+        setPhase("key");
+        return;
+      }
+      if (key.return && loginError) {
+        setLoginError(null);
+        setLoginAttempt((a) => a + 1);
+      }
       return;
     }
     if (phase === "key") {
@@ -190,26 +236,14 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
           setError(problem);
           return;
         }
-        const keyText = value.trim();
-        setVerifying(true);
+        try {
+          setConfigValue("apiKey", value.trim());
+        } catch {
+          setError("Could not save the key. Check write permissions and try again.");
+          return;
+        }
         setError(null);
-        void verifyApiKey(keyText).then((verdict) => {
-          setVerifying(false);
-          if (verdict === "invalid") {
-            setError(
-              "Poke rejected this key (HTTP 401/403). Make sure it's a V2 Kitchen key " +
-                "from https://poke.com/kitchen/api-keys, then paste it again.",
-            );
-            return;
-          }
-          try {
-            setConfigValue("apiKey", keyText);
-          } catch {
-            setError("Could not save the key. Check write permissions and try again.");
-            return;
-          }
-          setPhase("done");
-        });
+        setPhase("account");
         return;
       }
       if (key.backspace || key.delete) {
@@ -245,7 +279,8 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
         flexDirection="column"
       >
         {phase === "welcome" && <WelcomeStep />}
-        {phase === "key" && <KeyStep value={value} error={error} verifying={verifying} />}
+        {phase === "key" && <KeyStep value={value} error={error} />}
+        {phase === "account" && <AccountStep info={loginInfo} error={loginError} />}
         {phase === "done" && <DoneStep />}
       </Box>
       <Box marginTop={1}>

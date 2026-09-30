@@ -23,6 +23,7 @@ the tunnel.
 
 - [Bun](https://bun.sh) 1.4+
 - A Poke V2 API key (Kitchen key) from https://poke.com/kitchen/api-keys
+- A Poke account (one-time browser login for the tool tunnel)
 
 Works on macOS, Linux, and Windows. The `bash` tool uses the platform shell
 (`bash` on macOS/Linux, `cmd.exe` on Windows); config and tunnel state live
@@ -59,8 +60,13 @@ to install what's missing (per OS).
 
 ## Configuration
 
-On first start poke-code opens a fullscreen setup wizard: a short welcome,
-masked key prompt with format + live validation against Poke's API, and confirmation — no manual config needed.
+On first start poke-code opens a fullscreen setup wizard — no manual config needed:
+
+1. **V2 API key** — masked prompt, validated and saved (`0600`). Used for the
+   message API. Get one at https://poke.com/kitchen/api-keys.
+2. **Poke account login** — one-time device-code login in your browser. The
+   tool tunnel authenticates with your Poke login (like the official
+   `poke tunnel` CLI); the API key is not valid for tunnels.
 
 ```sh
 # …or set it manually (written with 0600 permissions)
