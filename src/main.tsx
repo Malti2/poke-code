@@ -29,7 +29,8 @@ program
   .description("Start the Poke tunnel standalone (exposes local tools to Poke)")
   .argument("[token]", "Login token override (falls back to Poke login / device flow)")
   .action(async (token: string | undefined) => {
-    const tunnel = new TunnelService();
+    const ts = () => new Date().toISOString().slice(11, 19);
+    const tunnel = new TunnelService({ logger: (msg) => console.log(`[${ts()}] ${msg}`) });
     // Non-interactive: approve tool calls automatically, but say so loudly.
     tunnel.setPermissionHandler(async ({ tool }) => {
       console.error(`[tunnel] auto-allowing ${tool.name} (non-interactive mode)`);
@@ -127,7 +128,8 @@ program.action(async () => {
 });
 
 async function runPrint(query: string): Promise<void> {
-  const tunnel = new TunnelService();
+  // Tunnel internals go to stderr so stdout carries only the answer.
+  const tunnel = new TunnelService({ logger: (msg) => console.error(`[tunnel] ${msg}`) });
   const mode = permissionModeOf(loadConfig());
   tunnel.setPermissionHandler(async ({ tool }) => {
     if (mode === "readonly") {

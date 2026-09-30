@@ -79,6 +79,15 @@ const HELP_TEXT = [
   "Keys: Enter send · Alt+Enter newline · Esc abort/wait · 1/2/3 answer permission prompts · Ctrl+C quit",
 ].join("\n");
 
+/** Remove the character before the cursor (Backspace semantics). Pure helper, exported for tests. */
+export function applyBackspace(input: string, cursor: number): { input: string; cursor: number } {
+  if (cursor <= 0) return { input, cursor };
+  return {
+    input: input.slice(0, cursor - 1) + input.slice(cursor),
+    cursor: cursor - 1,
+  };
+}
+
 export function App() {
   const { exit } = useApp();
   const [entries, setEntries] = useState<Entry[]>([
@@ -344,15 +353,13 @@ export function App() {
     if (key.escape) {
       return;
     }
-    if (key.backspace) {
-      if (cursor > 0) {
-        setInput((prev) => prev.slice(0, cursor - 1) + prev.slice(cursor));
-        setCursor((c) => c - 1);
-      }
-      return;
-    }
-    if (key.delete) {
-      setInput((prev) => prev.slice(0, cursor) + prev.slice(cursor + 1));
+    // Note: macOS sends DEL (\x7f) for the Backspace key, which Ink reports
+    // as key.delete (not key.backspace). Treat it like backspace: delete
+    // the character before the cursor, the way every other app behaves.
+    if (key.backspace || key.delete) {
+      const next = applyBackspace(input, cursor);
+      setInput(next.input);
+      setCursor(next.cursor);
       return;
     }
     if (key.leftArrow) {

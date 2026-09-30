@@ -12,6 +12,8 @@ interface State {
   connectionHistory?: string[];
 }
 
+export type TunnelLogger = (msg: string) => void;
+
 export interface LoginCodeInfo {
   userCode: string;
   loginUrl: string;
@@ -19,11 +21,6 @@ export interface LoginCodeInfo {
 
 const CONFIG_DIR = join(homedir(), ".config", "poke-code");
 const STATE_PATH = join(CONFIG_DIR, "state.json");
-
-function log(msg: string) {
-  const ts = new Date().toISOString().slice(11, 19);
-  console.log(`[${ts}] ${msg}`);
-}
 
 export interface ToolCallEvent {
   type: "tool-start" | "tool-end";
@@ -64,7 +61,10 @@ export class TunnelService {
   private onReplyToTerminal: ((answer: string) => void) | null = null;
   private loginCodeHandler: ((info: LoginCodeInfo | null) => void) | null = null;
 
-  constructor(opts: { permissionMode?: PermissionMode } = {}) {
+  private logger: TunnelLogger;
+
+  constructor(opts: { permissionMode?: PermissionMode; logger?: TunnelLogger } = {}) {
+    this.logger = opts.logger ?? (() => {});
     this.permissionMode = opts.permissionMode ?? permissionModeOf(loadConfig());
     this.toolManager = new ToolManager({
       onReplyToTerminal: (answer) => this.onReplyToTerminal?.(answer),
@@ -205,7 +205,7 @@ export class TunnelService {
   }
 
   private async triggerManualLogin(): Promise<string> {
-    log("Triggering Poke login flow...");
+    this.logger("Triggering Poke login flow...");
 
     try {
       await login({
@@ -220,7 +220,7 @@ export class TunnelService {
             console.error(`\n  1. Go to: ${loginUrl}`);
             console.error(`  2. Enter code: ${userCode}`);
             console.error("\n============================================================\n");
-            log("Opening browser (if supported)...");
+            this.logger("Opening browser (if supported)...");
           }
         },
       });
@@ -244,7 +244,7 @@ export class TunnelService {
   private async ensureAuth(passedToken?: string): Promise<string> {
     // 1. Explicitly passed token (login-token override)
     if (passedToken) {
-      log("Using explicitly passed token.");
+      this.logger("Using explicitly passed token.");
       return passedToken;
     }
 
@@ -252,7 +252,7 @@ export class TunnelService {
     if (isLoggedIn()) {
       const token = getToken();
       if (token) {
-        log("Using token from Poke login state.");
+        this.logger("Using token from Poke login state.");
         return token;
       }
     }
@@ -274,7 +274,7 @@ export class TunnelService {
 
     if (ids.size === 0) return;
 
-    log(`Cleaning up ${ids.size} old connection(s)…`);
+    this.logger(`Cleaning up ${ids.size} old connection(s)…`);
 
     for (const id of ids) {
       try {
@@ -325,7 +325,7 @@ export class TunnelService {
         resolve();
       };
       const timer = setTimeout(() => {
-        log("Warning: timed out waiting for Poke to sync tools; continuing anyway.");
+        this.logger("Warning: timed out waiting for Poke to sync tools; continuing anyway.");
         done();
       }, 60_000);
       const onSynced = () => done();
@@ -338,11 +338,11 @@ export class TunnelService {
           syncTools
             .call(tunnel)
             .catch((e: unknown) =>
-              log(`Immediate tool sync failed, waiting for interval sync: ${e instanceof Error ? e.message : String(e)}`),
+              this.logger(`Immediate tool sync failed, waiting for interval sync: ${e instanceof Error ? e.message : String(e)}`),
             );
         }
       } catch (e: unknown) {
-        log(`Immediate tool sync failed, waiting for interval sync: ${e instanceof Error ? e.message : String(e)}`);
+        this.logger(`Immediate tool sync failed, waiting for interval sync: ${e instanceof Error ? e.message : String(e)}`);
       }
     });
   }
@@ -367,9 +367,9 @@ export class TunnelService {
             onCallTool: (name, args) => this.handleToolCall(name, args),
             // Log every incoming MCP request (Poke's server -> tunnel ->
             // this server) so path mismatches show up in the poke-code log.
-            log: (msg) => log(msg),
+            log: (msg) => this.logger(msg),
           });
-          log(`Local MCP server listening at ${this.mcp.url}`);
+          this.logger(`Local MCP server listening at ${this.mcp.url}`);
         }
 
         this.tunnel = new PokeTunnel({
@@ -389,7 +389,7 @@ export class TunnelService {
           const history = state.connectionHistory || [];
           if (info.connectionId) history.push(info.connectionId);
           this.saveState({ ...state, connectionId: info.connectionId, connectionHistory: history.slice(-10) });
-          log(`Tunnel connection established. ID: ${info.connectionId}`);
+          this.logger(`Tunnel connection established. ID: ${info.connectionId}`);
           this.connected = true;
           // Don't resolve yet: Poke's assistant must first learn our tool
           // list (incl. `reply_to_terminal`). The SDK only re-syncs on an
@@ -414,12 +414,12 @@ export class TunnelService {
         this.tunnel.on("disconnected", () => {
           this.connected = false;
           if (isAuthFailure) return;
-          log("Tunnel disconnected.");
+          this.logger("Tunnel disconnected.");
           const duration = Date.now() - connectionStartTime;
 
           // If we disconnect instantly (< 3s) AND haven't established connection yet, it's likely an auth issue
           if (!isResolved && duration < 3000) {
-            log("Immediate disconnect detected. Current token may be invalid.");
+            this.logger("Immediate disconnect detected. Current token may be invalid.");
             isAuthFailure = true;
             this.tunnel?.stop();
             reject(new Error("AUTH_INVALID"));
@@ -428,7 +428,7 @@ export class TunnelService {
 
         this.tunnel.on("error", (err) => {
           if (isAuthFailure) return;
-          log(`Tunnel error: ${err.message}`);
+          this.logger(`Tunnel error: ${err.message}`);
           const msg = err.message.toLowerCase();
           if (
             msg.includes("401") ||
@@ -443,10 +443,10 @@ export class TunnelService {
         });
 
         this.tunnel.on("toolsSynced", ({ toolCount }) =>
-          log(`Synced ${toolCount} tools to Poke.`),
+          this.logger(`Synced ${toolCount} tools to Poke.`),
         );
 
-        log("Starting Poke Tunnel...");
+        this.logger("Starting Poke Tunnel...");
         try {
           await this.tunnel.start();
         } catch (e: unknown) {
@@ -474,7 +474,7 @@ export class TunnelService {
         if (msg === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
           // The login token was rejected — drop it and run the device flow
           // again (surfaces the login screen in the TUI via the handler).
-          log("Login token rejected, re-authenticating...");
+          this.logger("Login token rejected, re-authenticating...");
           await logout().catch(() => {});
           connectionAttempts++;
           currentToken = await this.triggerManualLogin();
