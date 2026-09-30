@@ -43,6 +43,11 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp("^" + re + "$");
 }
 
+/** Normalize a relative path for glob matching (Windows uses `\` separators). */
+export function toMatchPath(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
 async function walk(dir: string, out: string[], root: string): Promise<void> {
   let entries;
   try {
@@ -84,7 +89,10 @@ export const globTool: ToolDefinition = {
       const files: string[] = [];
       await walk(root, files, root);
       const re = globToRegExp(pattern);
-      const matches = files.filter((f) => re.test(f)).slice(0, 200);
+      const matches = files
+        .map(toMatchPath)
+        .filter((f) => re.test(f))
+        .slice(0, 200);
       if (matches.length === 0) return ok(`No files match "${pattern}".`);
       return ok(matches.join("\n"));
     } catch (e) {

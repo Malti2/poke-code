@@ -2,6 +2,18 @@ import { err, needString, ok, optString, schemaFor, type ToolDefinition } from "
 
 const MAX_OUTPUT = 30_000;
 
+/**
+ * Shell invocation for the current platform.
+ * Exported for tests: pass a platform override to check other OSes.
+ */
+export function shellForPlatform(
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  // Windows has no bash by default; cmd.exe is always present.
+  if (platform === "win32") return ["cmd.exe", "/d", "/s", "/c"];
+  return ["bash", "-c"];
+}
+
 async function readStream(stream: ReadableStream<Uint8Array> | number | null | undefined): Promise<string> {
   if (!stream || typeof stream === "number") return "";
   return new Response(stream).text();
@@ -11,10 +23,13 @@ async function readStream(stream: ReadableStream<Uint8Array> | number | null | u
 export const bashTool: ToolDefinition = {
   name: "bash",
   description:
-    "Execute a bash command. Always quote paths. Prefer dedicated tools (read/edit/grep) for file work. Long-running commands should be backgrounded by the command itself.",
+    "Execute a shell command (bash on macOS/Linux, cmd.exe on Windows). " +
+    "Always quote paths. Prefer dedicated tools (read/edit/grep) for file work. " +
+    "Long-running commands should be backgrounded by the command itself. " +
+    "On Windows there are no Unix utilities: use dir/type instead of ls/cat.",
   inputSchema: schemaFor(
     {
-      command: { type: "string", description: "The bash command to run." },
+      command: { type: "string", description: "The shell command to run." },
       cwd: { type: "string", description: "Working directory (default: session cwd)." },
       timeout: { type: "number", description: "Timeout in seconds (default 60, max 600)." },
     },
@@ -31,7 +46,7 @@ export const bashTool: ToolDefinition = {
 
     let proc: ReturnType<typeof Bun.spawn>;
     try {
-      proc = Bun.spawn(["bash", "-c", command], {
+      proc = Bun.spawn([...shellForPlatform(), command], {
         stdout: "pipe",
         stderr: "pipe",
         cwd,
@@ -40,11 +55,16 @@ export const bashTool: ToolDefinition = {
       return err(`Failed to start command: ${e instanceof Error ? e.message : String(e)}`);
     }
 
+    let timedOut = false;
     const killer = setTimeout(() => {
-      try {
-        proc.kill();
-      } catch {
-        // Already exited.
+      // proc.exitCode is null while the process is still running.
+      if (proc.exitCode === null) {
+        timedOut = true;
+        try {
+          proc.kill();
+        } catch {
+          // Already exited.
+        }
       }
     }, timeoutSec * 1000);
 
@@ -64,7 +84,6 @@ export const bashTool: ToolDefinition = {
       if (output.length > MAX_OUTPUT) {
         output = output.slice(0, MAX_OUTPUT) + `\n… (output truncated at ${MAX_OUTPUT} chars)`;
       }
-      const timedOut = proc.signalCode != null && proc.signalCode !== null;
       const header = `exit code: ${exitCode}${timedOut ? " (timed out, killed)" : ""}`;
       return ok(`${header}\n${output}`);
     } finally {

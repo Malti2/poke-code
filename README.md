@@ -24,6 +24,10 @@ the tunnel.
 - [Bun](https://bun.sh) 1.4+
 - A Poke V2 API key (Kitchen key) from https://poke.com/kitchen/api-keys
 
+Works on macOS, Linux, and Windows. The `bash` tool uses the platform shell
+(`bash` on macOS/Linux, `cmd.exe` on Windows); config and tunnel state live
+in `~/.config/poke-code` on all platforms.
+
 ## Install
 
 ```sh
