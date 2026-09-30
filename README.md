@@ -1,4 +1,4 @@
-# poke-code
+# 🌴 poke-code
 
 A terminal coding assistant powered by **Poke**. You type in a Claude Code-style
 TUI; Poke's assistant does the thinking in the cloud and can run tools on your
@@ -59,8 +59,8 @@ to install what's missing (per OS).
 
 ## Configuration
 
-On first start poke-code runs a short onboarding: paste your V2 API key
-(input is hidden), it's validated and saved — no manual config needed.
+On first start poke-code opens a fullscreen setup wizard: a short welcome,
+masked key prompt with validation, and confirmation — no manual config needed.
 
 ```sh
 # …or set it manually (written with 0600 permissions)

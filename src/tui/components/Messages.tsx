@@ -20,7 +20,7 @@ export function AssistantMessage({ text }: { text: string }) {
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color={theme.brand} bold>
-        ✦ Poke
+        🌴 Poke
       </Text>
       <Box marginLeft={2} flexDirection="column">
         {renderMarkdown(text)}

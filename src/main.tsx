@@ -1,11 +1,11 @@
 import { Command } from "commander";
 import { render } from "ink";
-import React from "react";
+import React, { useState } from "react";
 import { TunnelService } from "./services/tunnel";
 import { AgentSession, DEFAULT_REPLY_TIMEOUT_MS } from "./agent/session";
 import { PokeClient } from "./poke/client";
 import { App } from "./tui/App";
-import { runOnboarding } from "./tui/Onboarding";
+import { OnboardingScreen } from "./tui/Onboarding";
 import { runSetup } from "./setup";
 import {
   getConfigValue,
@@ -85,6 +85,18 @@ configCmd
     }
   });
 
+/**
+ * Single Ink root: the onboarding is a fullscreen screen inside the same
+ * render() call, so there is no unmount/remount cycle around the key prompt.
+ */
+function Root() {
+  const [onboarded, setOnboarded] = useState(() => new PokeClient().hasApiKey());
+  if (!onboarded) {
+    return <OnboardingScreen onComplete={() => setOnboarded(true)} />;
+  }
+  return <App />;
+}
+
 program.action(async () => {
   const opts = program.opts<{ print?: string }>();
 
@@ -93,29 +105,18 @@ program.action(async () => {
     return;
   }
 
-  // TUI mode: require a key up front (env or config). The login device flow
-  // prints to the console, which would corrupt the Ink UI, so we guide the
-  // user through onboarding instead.
-  const client = new PokeClient();
-  if (!client.hasApiKey()) {
-    if (process.stdin.isTTY && process.stdout.isTTY) {
-      const ok = await runOnboarding();
-      if (!ok) {
-        console.error("No API key saved. Run `poke-code` again when you're ready,");
-        console.error("or set one manually: poke-code config set apiKey <your-key>");
-        process.exit(1);
-      }
-      console.log("API key saved. Starting poke-code…");
-    } else {
-      console.error("No Poke API key found.");
-      console.error("");
-      console.error("Get a V2 API key at https://poke.com/kitchen/api-keys, then run:");
-      console.error("  poke-code config set apiKey <your-key>");
-      console.error("or export POKE_API_KEY=<your-key>");
-      process.exit(1);
-    }
+  // Without a TTY we can't run the onboarding; the login device flow prints
+  // to the console, which would corrupt the Ink UI, so we bail out with
+  // instructions instead.
+  if (!new PokeClient().hasApiKey() && !(process.stdin.isTTY && process.stdout.isTTY)) {
+    console.error("No Poke API key found.");
+    console.error("");
+    console.error("Get a V2 API key at https://poke.com/kitchen/api-keys, then run:");
+    console.error("  poke-code config set apiKey <your-key>");
+    console.error("or export POKE_API_KEY=<your-key>");
+    process.exit(1);
   }
-  render(<App />);
+  render(<Root />);
 });
 
 async function runPrint(query: string): Promise<void> {

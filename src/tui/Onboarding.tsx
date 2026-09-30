@@ -1,6 +1,7 @@
-import React, { useState } from "react";
-import { Box, Text, render, useInput } from "ink";
-import { setConfigValue } from "../config";
+import React, { useEffect, useState } from "react";
+import { Box, Text, useInput, useStdout } from "ink";
+import { CONFIG_PATH, setConfigValue } from "../config";
+import { theme } from "./theme";
 
 /**
  * Validate a pasted API key. Returns an error message, or null when the key
@@ -16,92 +17,181 @@ export function validateApiKey(raw: string): string | null {
   return null;
 }
 
-function MaskedPrompt({ onDone }: { onDone: (key: string | null) => void }) {
-  const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
+type Phase = "welcome" | "key" | "done";
 
-  useInput((input, key) => {
-    if (key.escape || (key.ctrl && input === "c")) {
-      onDone(null);
-      return;
-    }
-    if (key.return) {
-      const problem = validateApiKey(value);
-      if (problem) {
-        setError(problem);
-        return;
-      }
-      onDone(value.trim());
-      return;
-    }
-    if (key.backspace || key.delete) {
-      setValue((v) => v.slice(0, -1));
-      setError(null);
-      return;
-    }
-    if (key.ctrl && input === "u") {
-      setValue("");
-      setError(null);
-      return;
-    }
-    // Ignore arrows and other control sequences.
-    if (key.ctrl || key.meta || key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
-      return;
-    }
-    setValue((v) => v + input);
-    if (error) setError(null);
-  });
+const CARD_WIDTH = 62;
 
+function WelcomeStep() {
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Text bold color="cyan">
-        Welcome to poke-code ✦
+    <Box flexDirection="column" alignItems="center">
+      <Text bold color={theme.brand}>
+        <Text>🌴 poke-code</Text>
       </Text>
-      <Box marginTop={1} flexDirection="column">
-        <Text>To get started, paste your Poke V2 API key below.</Text>
-        <Text dimColor>Get one at https://poke.com/kitchen/api-keys (Kitchen → API keys)</Text>
-      </Box>
       <Box marginTop={1}>
-        <Text>
-          <Text color="green" bold>› </Text>
-          <Text>{value.length === 0 ? <Text dimColor>paste key…</Text> : "•".repeat(value.length)}</Text>
-          <Text color="green">▌</Text>
+        <Text dimColor>Terminal coding assistant · powered by Poke</Text>
+      </Box>
+      <Box marginTop={2} flexDirection="column">
+        <Text>Setup takes about 30 seconds:</Text>
+        <Box marginTop={1} flexDirection="column" paddingLeft={2}>
+          <Text>
+            <Text color={theme.brand} bold>1 · </Text>
+            <Text>Get a V2 API key</Text>
+          </Text>
+          <Text>
+            <Text color={theme.brand} bold>2 · </Text>
+            <Text>Paste it on the next screen</Text>
+          </Text>
+          <Text>
+            <Text color={theme.brand} bold>3 · </Text>
+            <Text>Start coding</Text>
+          </Text>
+        </Box>
+      </Box>
+      <Box marginTop={2}>
+        <Text bold color={theme.success}>
+          Press Enter to continue
         </Text>
       </Box>
-      {error ? (
-        <Box marginTop={1}>
-          <Text color="red">✗ {error}</Text>
-        </Box>
-      ) : (
-        <Box marginTop={1}>
-          <Text dimColor>Enter to confirm · Esc to cancel · input is hidden</Text>
-        </Box>
-      )}
+    </Box>
+  );
+}
+
+function KeyStep({ value, error }: { value: string; error: string | null }) {
+  return (
+    <Box flexDirection="column">
+      <Text bold>
+        <Text>🌴 </Text>
+        <Text>Connect your API key</Text>
+      </Text>
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor>Get a V2 key (Kitchen → API keys):</Text>
+        <Text color={theme.brand}>https://poke.com/kitchen/api-keys</Text>
+      </Box>
+      <Box marginTop={1} borderStyle="round" borderColor={error ? theme.error : theme.dim} paddingX={1}>
+        <Text>
+          <Text color={theme.success} bold>› </Text>
+          {value.length === 0 ? (
+            <Text dimColor>paste key here…</Text>
+          ) : (
+            <Text>{"•".repeat(value.length)}</Text>
+          )}
+          <Text color={theme.success}>▌</Text>
+        </Text>
+      </Box>
+      <Box marginTop={1} minHeight={1}>
+        {error ? (
+          <Text color={theme.error}>✗ {error}</Text>
+        ) : (
+          <Text dimColor>Enter to confirm · Esc to go back · input is hidden</Text>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
+function DoneStep() {
+  return (
+    <Box flexDirection="column" alignItems="center">
+      <Text bold color={theme.success}>
+        ✓ API key saved
+      </Text>
+      <Box marginTop={1}>
+        <Text dimColor>Stored in {CONFIG_PATH} (0600)</Text>
+      </Box>
+      <Box marginTop={2}>
+        <Text>
+          <Text>🌴 </Text>
+          <Text dimColor>Starting poke-code…</Text>
+        </Text>
+      </Box>
     </Box>
   );
 }
 
 /**
- * Run the first-start onboarding: ask for the API key, validate, save.
- * Returns true when a key was saved, false when the user cancelled.
- * Only call this on an interactive TTY.
+ * Fullscreen first-start onboarding. Rendered as a screen inside the single
+ * Ink root (no separate render/unmount cycle). Calls onComplete once the key
+ * is validated and saved.
  */
-export async function runOnboarding(): Promise<boolean> {
-  let finish!: (key: string | null) => void;
-  const done = new Promise<string | null>((resolve) => {
-    finish = resolve;
+export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
+  const { stdout } = useStdout();
+  const [phase, setPhase] = useState<Phase>("welcome");
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (phase !== "done") return;
+    const t = setTimeout(onComplete, 1100);
+    return () => clearTimeout(t);
+  }, [phase, onComplete]);
+
+  useInput((input, key) => {
+    if (phase === "welcome") {
+      if (key.return) setPhase("key");
+      return;
+    }
+    if (phase === "key") {
+      if (key.escape) {
+        setPhase("welcome");
+        setValue("");
+        setError(null);
+        return;
+      }
+      if (key.return) {
+        const problem = validateApiKey(value);
+        if (problem) {
+          setError(problem);
+          return;
+        }
+        try {
+          setConfigValue("apiKey", value.trim());
+        } catch {
+          setError("Could not save the key. Check write permissions and try again.");
+          return;
+        }
+        setError(null);
+        setPhase("done");
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setValue((v) => v.slice(0, -1));
+        setError(null);
+        return;
+      }
+      if (key.ctrl && input === "u") {
+        setValue("");
+        setError(null);
+        return;
+      }
+      if (key.ctrl || key.meta || key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
+        return;
+      }
+      setValue((v) => v + input);
+      if (error) setError(null);
+      return;
+    }
+    // "done" — ignore input while transitioning.
   });
 
-  const { unmount, waitUntilExit } = render(<MaskedPrompt onDone={finish} />);
-  const key = await done;
-  unmount();
-  await waitUntilExit();
+  const height = stdout?.rows ? Math.max(stdout.rows - 2, 10) : undefined;
 
-  if (key === null) return false;
-  try {
-    setConfigValue("apiKey", key);
-  } catch {
-    return false;
-  }
-  return true;
+  return (
+    <Box flexDirection="column" height={height} justifyContent="center" alignItems="center">
+      <Box
+        borderStyle="round"
+        borderColor={theme.brand}
+        paddingX={4}
+        paddingY={2}
+        width={CARD_WIDTH}
+        flexDirection="column"
+      >
+        {phase === "welcome" && <WelcomeStep />}
+        {phase === "key" && <KeyStep value={value} error={error} />}
+        {phase === "done" && <DoneStep />}
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>poke-code · your key never leaves this machine except to talk to Poke</Text>
+      </Box>
+    </Box>
+  );
 }

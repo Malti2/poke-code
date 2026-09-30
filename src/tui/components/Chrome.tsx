@@ -7,7 +7,7 @@ export function Header({ cwd }: { cwd: string }) {
     <Box flexDirection="column" marginBottom={1}>
       <Box>
         <Text color={theme.brand} bold>
-          ✦ poke-code
+          🌴 poke-code
         </Text>
         <Text color={theme.dim}> via Poke</Text>
       </Box>
