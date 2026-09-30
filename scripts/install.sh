@@ -33,6 +33,20 @@ if ! have bun; then
 fi
 echo "Bun: $(bun --version)"
 
+# Bun >= 1.4 is required: older versions cannot parse the project's lockfile
+# format and would silently rewrite it (which then blocks future git pulls).
+bun_version="$(bun --version)"
+bun_major="${bun_version%%.*}"
+bun_minor_tmp="${bun_version#*.}"
+bun_minor="${bun_minor_tmp%%.*}"
+if [ "$bun_major" -lt 1 ] || { [ "$bun_major" -eq 1 ] && [ "$bun_minor" -lt 4 ]; }; then
+  echo "Upgrading Bun to 1.4+ (required for the project lockfile)..."
+  bun upgrade
+  export BUN_INSTALL="$HOME/.bun"
+  export PATH="$BUN_INSTALL/bin:$PATH"
+  echo "Bun: $(bun --version)"
+fi
+
 # 2. git
 if ! have git; then
   echo "Installing git..."
@@ -76,7 +90,18 @@ echo "git: $(git --version)"
 # 3. Clone or update
 if [ -d "$DEST/.git" ]; then
   echo "Updating existing checkout in $DEST ..."
-  git -C "$DEST" pull --ff-only || true
+  if git -C "$DEST" pull --ff-only; then
+    :
+  elif [ -n "$(git -C "$DEST" status --porcelain)" ]; then
+    echo "" >&2
+    echo "ERROR: cannot update $DEST - you have local changes that would be overwritten." >&2
+    echo "Discard them with:  git -C \"$DEST\" stash -u" >&2
+    echo "  or selectively:   git -C \"$DEST\" checkout -- <file>" >&2
+    echo "Then re-run this installer." >&2
+    exit 1
+  else
+    echo "WARNING: 'git pull' failed (offline?). Continuing with the existing checkout." >&2
+  fi
 elif [ ! -e "$DEST" ]; then
   echo "Cloning poke-code to $DEST ..."
   git clone "$REPO_URL" "$DEST"
@@ -85,14 +110,22 @@ else
   exit 1
 fi
 
-# 4. Project dependencies + 5. link binary onto PATH
+# 4. Project dependencies
 echo "Installing project dependencies..."
 (cd "$DEST" && bun install)
-# The linked binary is executed directly via its shebang, so it needs the
-# exec bit (git does not always preserve it, e.g. after API pushes).
-chmod +x "$DEST/src/main.tsx"
+# Keep the worktree clean: restore the committed lockfile in case this bun
+# version normalized it (a dirty lockfile would block the next 'git pull').
+git -C "$DEST" checkout -- bun.lock 2>/dev/null || true
+
+# 5. Launcher onto PATH. A tiny sh wrapper that runs the entrypoint with bun -
+# deterministic on every machine, no reliance on symlinks, shebangs or the
+# exec bit surviving git.
 echo "Linking the poke-code binary..."
 (cd "$DEST" && bun link)
+mkdir -p "$HOME/.bun/bin"
+rm -f "$HOME/.bun/bin/poke-code"
+printf '#!/bin/sh\nexec bun "%s/src/main.tsx" "$@"\n' "$DEST" > "$HOME/.bun/bin/poke-code"
+chmod +x "$HOME/.bun/bin/poke-code"
 
 export PATH="$HOME/.bun/bin:$PATH"
 

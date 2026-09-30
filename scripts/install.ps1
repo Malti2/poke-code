@@ -37,6 +37,17 @@ if (-not (Has-Command "bun")) {
 }
 Write-Host "Bun: $(bun --version)"
 
+# Bun >= 1.4 is required: older versions cannot parse the project's lockfile
+# format and would silently rewrite it (which then blocks future git pulls).
+$bunVersion = (bun --version).Trim()
+$bunParts = $bunVersion.Split('.')
+if (([int]$bunParts[0] -lt 1) -or (([int]$bunParts[0] -eq 1) -and ([int]$bunParts[1] -lt 4))) {
+  Write-Host "Upgrading Bun to 1.4+ (required for the project lockfile)..."
+  bun upgrade
+  Refresh-Path
+  Write-Host "Bun: $(bun --version)"
+}
+
 # 2. git
 if (-not (Has-Command "git")) {
   Write-Host "Installing git..."
@@ -56,6 +67,14 @@ Write-Host "git: $(git --version)"
 if (Test-Path (Join-Path $Dest ".git")) {
   Write-Host "Updating existing checkout in $Dest ..."
   git -C $Dest pull --ff-only
+  if ($LASTEXITCODE -ne 0) {
+    $dirty = git -C $Dest status --porcelain
+    if ($dirty) {
+      throw "Cannot update $Dest - you have local changes that would be overwritten. Discard them with: git -C ""$Dest"" stash -u  (or: git -C ""$Dest"" checkout -- <file>), then re-run this installer."
+    } else {
+      Write-Host "WARNING: 'git pull' failed (offline?). Continuing with the existing checkout." -ForegroundColor Yellow
+    }
+  }
 } elseif (-not (Test-Path $Dest)) {
   Write-Host "Cloning poke-code to $Dest ..."
   git clone $RepoUrl $Dest
@@ -68,6 +87,9 @@ Write-Host "Installing project dependencies..."
 Push-Location $Dest
 try {
   bun install
+  # Keep the worktree clean: restore the committed lockfile in case this bun
+  # version normalized it (a dirty lockfile would block the next 'git pull').
+  git -C $Dest checkout -- bun.lock 2>$null
   Write-Host "Linking the poke-code binary..."
   bun link
 } finally {
