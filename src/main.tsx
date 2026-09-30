@@ -34,7 +34,13 @@ program
       console.error(`[tunnel] auto-allowing ${tool.name} (non-interactive mode)`);
       return "allow";
     });
-    await tunnel.connect(token);
+    try {
+      await tunnel.connect(token);
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      await tunnel.stop().catch(() => {});
+      process.exit(1);
+    }
     console.log("Tunnel connected. Press Ctrl+C to stop.");
     await new Promise(() => {});
   });

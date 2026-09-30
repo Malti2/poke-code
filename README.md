@@ -60,7 +60,7 @@ to install what's missing (per OS).
 ## Configuration
 
 On first start poke-code opens a fullscreen setup wizard: a short welcome,
-masked key prompt with validation, and confirmation — no manual config needed.
+masked key prompt with format + live validation against Poke's API, and confirmation — no manual config needed.
 
 ```sh
 # …or set it manually (written with 0600 permissions)

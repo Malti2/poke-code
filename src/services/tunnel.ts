@@ -372,7 +372,13 @@ export class TunnelService {
         this.tunnel.on("error", (err) => {
           if (isAuthFailure) return;
           log(`Tunnel error: ${err.message}`);
-          if (err.message.includes("401") || err.message.toLowerCase().includes("auth")) {
+          const msg = err.message.toLowerCase();
+          if (
+            msg.includes("401") ||
+            msg.includes("403") ||
+            msg.includes("auth") ||
+            msg.includes("forbidden")
+          ) {
             isAuthFailure = true;
             this.tunnel?.stop();
             reject(new Error("AUTH_INVALID"));
@@ -387,7 +393,16 @@ export class TunnelService {
         try {
           await this.tunnel.start();
         } catch (e: unknown) {
-          if (!isResolved && !isAuthFailure) reject(e);
+          if (isResolved || isAuthFailure) return;
+          // The SDK throws plain errors like "Failed to create tunnel: HTTP 403"
+          // — map auth failures onto the AUTH_INVALID path.
+          const m = e instanceof Error ? e.message : String(e);
+          if (/\b401\b|\b403\b/i.test(m) || m.toLowerCase().includes("auth")) {
+            isAuthFailure = true;
+            reject(new Error("AUTH_INVALID"));
+          } else {
+            reject(e);
+          }
         }
       });
     };
@@ -400,14 +415,26 @@ export class TunnelService {
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
+          // With a user-provided API key (env/config), the console device
+          // flow would corrupt the TUI — fail with actionable guidance
+          // instead so the user can fix the key.
+          if (process.env.POKE_API_KEY || loadConfig().apiKey) {
+            throw new Error(
+              "Poke rejected your API key (HTTP 401/403).\n" +
+                "Make sure you pasted a V2 Kitchen key from https://poke.com/kitchen/api-keys,\n" +
+                "then replace it with:\n" +
+                "  poke-code config set apiKey <your-key>",
+            );
+          }
           log("Clearing invalid token and re-authenticating...");
           this.clearToken();
           connectionAttempts++;
           currentToken = await this.triggerManualLogin();
           // The loop will continue and try to startTunnel again with the new currentToken
         } else {
-          console.error(`\nCRITICAL FAILURE: ${msg}`);
-          process.exit(1);
+          // Let the caller handle it: the TUI shows it as an error entry,
+          // --print prints it, the standalone tunnel command exits(1).
+          throw error instanceof Error ? error : new Error(String(error));
         }
       }
     }

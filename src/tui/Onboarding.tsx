@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { CONFIG_PATH, setConfigValue } from "../config";
 import { theme } from "./theme";
+import { Spinner } from "./components/Spinner";
 
 /**
  * Validate a pasted API key. Returns an error message, or null when the key
@@ -15,6 +16,40 @@ export function validateApiKey(raw: string): string | null {
   }
   if (key.length < 16) return "That key looks too short. Please check and paste again.";
   return null;
+}
+
+export type KeyCheckVerdict = "ok" | "invalid" | "unknown";
+
+/**
+ * Map an HTTP status from the key probe to a verdict. Exported for tests.
+ * Only 401/403 mean "bad key"; anything else (even 404) means the auth
+ * layer let the request through, and null means the network failed.
+ */
+export function classifyKeyCheck(status: number | null): KeyCheckVerdict {
+  if (status === 401 || status === 403) return "invalid";
+  if (status === null) return "unknown";
+  return "ok";
+}
+
+/**
+ * Probe the key against Poke's API (list MCP connections — no side effects).
+ * Never throws; network failures yield "unknown".
+ */
+export async function verifyApiKey(key: string): Promise<KeyCheckVerdict> {
+  const base = (process.env.POKE_API ?? "https://poke.com/api/v1").replace(/\/+$/, "");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch(`${base}/mcp/connections`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: ctrl.signal,
+    });
+    return classifyKeyCheck(res.status);
+  } catch {
+    return "unknown";
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type Phase = "welcome" | "key" | "done";
@@ -56,7 +91,15 @@ function WelcomeStep() {
   );
 }
 
-function KeyStep({ value, error }: { value: string; error: string | null }) {
+function KeyStep({
+  value,
+  error,
+  verifying,
+}: {
+  value: string;
+  error: string | null;
+  verifying: boolean;
+}) {
   return (
     <Box flexDirection="column">
       <Text bold>
@@ -79,7 +122,9 @@ function KeyStep({ value, error }: { value: string; error: string | null }) {
         </Text>
       </Box>
       <Box marginTop={1} minHeight={1}>
-        {error ? (
+        {verifying ? (
+          <Spinner label="Checking key with Poke…" />
+        ) : error ? (
           <Text color={theme.error}>✗ {error}</Text>
         ) : (
           <Text dimColor>Enter to confirm · Esc to go back · input is hidden</Text>
@@ -118,6 +163,7 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
   const [phase, setPhase] = useState<Phase>("welcome");
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
   useEffect(() => {
     if (phase !== "done") return;
@@ -126,6 +172,7 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
   }, [phase, onComplete]);
 
   useInput((input, key) => {
+    if (verifying) return; // ignore input while the key is being checked
     if (phase === "welcome") {
       if (key.return) setPhase("key");
       return;
@@ -143,14 +190,26 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
           setError(problem);
           return;
         }
-        try {
-          setConfigValue("apiKey", value.trim());
-        } catch {
-          setError("Could not save the key. Check write permissions and try again.");
-          return;
-        }
+        const keyText = value.trim();
+        setVerifying(true);
         setError(null);
-        setPhase("done");
+        void verifyApiKey(keyText).then((verdict) => {
+          setVerifying(false);
+          if (verdict === "invalid") {
+            setError(
+              "Poke rejected this key (HTTP 401/403). Make sure it's a V2 Kitchen key " +
+                "from https://poke.com/kitchen/api-keys, then paste it again.",
+            );
+            return;
+          }
+          try {
+            setConfigValue("apiKey", keyText);
+          } catch {
+            setError("Could not save the key. Check write permissions and try again.");
+            return;
+          }
+          setPhase("done");
+        });
         return;
       }
       if (key.backspace || key.delete) {
@@ -186,7 +245,7 @@ export function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
         flexDirection="column"
       >
         {phase === "welcome" && <WelcomeStep />}
-        {phase === "key" && <KeyStep value={value} error={error} />}
+        {phase === "key" && <KeyStep value={value} error={error} verifying={verifying} />}
         {phase === "done" && <DoneStep />}
       </Box>
       <Box marginTop={1}>
