@@ -104,6 +104,7 @@ export function App() {
   const [pendingPermission, setPendingPermission] = useState<PendingPermissionState | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
   const [connected, setConnected] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [loginCode, setLoginCode] = useState<LoginCodeInfo | null>(null);
 
   const { tunnel, session } = useMemo(() => {
@@ -164,7 +165,10 @@ export function App() {
 
     tunnel.setLoginCodeHandler(setLoginCode);
 
-    const timer = setInterval(() => setConnected(tunnel.isConnected), 2000);
+    const timer = setInterval(() => {
+      setConnected(tunnel.isConnected);
+      setReconnecting(tunnel.isReconnecting);
+    }, 2000);
     return () => {
       clearInterval(timer);
       tunnel.setLoginCodeHandler(null);
@@ -253,6 +257,7 @@ export function App() {
           const answer = await session.ask(trimmed, { signal: controller.signal });
           pushEntry({ kind: "assistant", id: uid(), text: answer });
           setConnected(tunnel.isConnected);
+          setReconnecting(tunnel.isReconnecting);
         } catch (e) {
           pushEntry({
             kind: "error",
@@ -431,7 +436,7 @@ export function App() {
           {pendingPermission && <PermissionPrompt pending={pendingPermission} />}
           {slashOpen && <SlashMenu commands={slashMatches} selected={slashIndex} />}
           <InputBox value={input} cursor={cursor} waiting={waiting} waitingSecs={waitSecs} />
-          <StatusBar connected={connected} permissionMode={permissionModeOf(loadConfig())} />
+          <StatusBar connected={connected} reconnecting={reconnecting} permissionMode={permissionModeOf(loadConfig())} />
           <Text color={theme.faint}> </Text>
         </Box>
       )}

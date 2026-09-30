@@ -63,6 +63,16 @@ export class TunnelService {
 
   private logger: TunnelLogger;
 
+  // --- auto-reconnect state -------------------------------------------------
+  // If the tunnel drops unexpectedly (network blip, firewall, sleep), Poke's
+  // broker reports "no available upstreams" for every tool call until a new
+  // upstream connects. Reconnect with backoff instead of staying dead.
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectAttempts = 0;
+  private stopRequested = false;
+  private activeToken: string | undefined;
+  private static readonly MAX_RECONNECT_ATTEMPTS = 20;
+
   constructor(opts: { permissionMode?: PermissionMode; logger?: TunnelLogger } = {}) {
     this.logger = opts.logger ?? (() => {});
     this.permissionMode = opts.permissionMode ?? permissionModeOf(loadConfig());
@@ -114,6 +124,11 @@ export class TunnelService {
 
   get isConnected(): boolean {
     return this.connected;
+  }
+
+  /** True while a reconnect attempt is scheduled or running. */
+  get isReconnecting(): boolean {
+    return this.reconnectTimer !== undefined;
   }
 
   /** The advertised tool registry (single source of truth). */
@@ -347,12 +362,46 @@ export class TunnelService {
     });
   }
 
-  async connect(passedToken?: string) {    let currentToken = await this.ensureAuth(passedToken);
+  async connect(passedToken?: string) {
+    this.stopRequested = false;
+    this.reconnectAttempts = 0;
+    let currentToken = await this.ensureAuth(passedToken);
+    this.activeToken = currentToken;
     let connectionAttempts = 0;
     const MAX_AUTH_RETRIES = 1;
 
-    const startTunnel = async (token: string): Promise<void> => {
-      return new Promise(async (resolve, reject) => {
+    while (connectionAttempts <= MAX_AUTH_RETRIES) {
+      try {
+        await this.startTunnelOnce(currentToken);
+        // If we reach here, it connected successfully
+        break;
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
+          // The login token was rejected — drop it and run the device flow
+          // again (surfaces the login screen in the TUI via the handler).
+          this.logger("Login token rejected, re-authenticating...");
+          await logout().catch(() => {});
+          connectionAttempts++;
+          currentToken = await this.triggerManualLogin();
+          this.activeToken = currentToken;
+          // The loop will continue and try to start the tunnel again with the new currentToken
+        } else {
+          // Let the caller handle it: the TUI shows it as an error entry,
+          // --print prints it, the standalone tunnel command exits(1).
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+      }
+    }
+  }
+
+  /**
+   * Bring up one tunnel instance: local MCP server (once), PokeTunnel,
+   * first tool sync. Resolves once Poke's assistant knows our tools.
+   * Rejects with AUTH_INVALID when the token is rejected.
+   */
+  private startTunnelOnce(token: string, opts: { isReconnect?: boolean } = {}): Promise<void> {
+    return new Promise(async (resolve, reject) => {
         let isResolved = false;
         let isAuthFailure = false;
 
@@ -419,10 +468,20 @@ export class TunnelService {
 
           // If we disconnect instantly (< 3s) AND haven't established connection yet, it's likely an auth issue
           if (!isResolved && duration < 3000) {
-            this.logger("Immediate disconnect detected. Current token may be invalid.");
             isAuthFailure = true;
             this.tunnel?.stop();
-            reject(new Error("AUTH_INVALID"));
+            reject(
+              opts.isReconnect
+                ? new Error("Tunnel dropped immediately during reconnect")
+                : new Error("AUTH_INVALID"),
+            );
+            return;
+          }
+          // Dropped after a successful connect: Poke's broker now reports
+          // "no available upstreams" for tool calls — re-establish the
+          // upstream instead of staying dead until restart.
+          if (isResolved && !this.stopRequested) {
+            this.scheduleReconnect();
           }
         });
 
@@ -461,34 +520,62 @@ export class TunnelService {
             reject(e);
           }
         }
-      });
-    };
+    });
+  }
 
-    while (connectionAttempts <= MAX_AUTH_RETRIES) {
-      try {
-        await startTunnel(currentToken);
-        // If we reach here, it connected successfully
-        break;
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        if (msg === "AUTH_INVALID" && connectionAttempts < MAX_AUTH_RETRIES) {
-          // The login token was rejected — drop it and run the device flow
-          // again (surfaces the login screen in the TUI via the handler).
-          this.logger("Login token rejected, re-authenticating...");
-          await logout().catch(() => {});
-          connectionAttempts++;
-          currentToken = await this.triggerManualLogin();
-          // The loop will continue and try to startTunnel again with the new currentToken
-        } else {
-          // Let the caller handle it: the TUI shows it as an error entry,
-          // --print prints it, the standalone tunnel command exits(1).
-          throw error instanceof Error ? error : new Error(String(error));
-        }
-      }
+  /**
+   * Schedule a reconnect attempt with exponential backoff after an
+   * unexpected tunnel drop. A dropped upstream is exactly what makes Poke's
+   * broker answer tool calls with "no available upstreams", so re-establish
+   * it instead of staying dead until the user restarts. Gives up after
+   * MAX_RECONNECT_ATTEMPTS so a permanently broken network doesn't spin
+   * forever; an AUTH_INVALID aborts immediately (re-login needs the user).
+   */
+  private scheduleReconnect(): void {
+    if (this.stopRequested || this.reconnectTimer) return;
+    const token = this.activeToken;
+    if (!token) return;
+    if (this.reconnectAttempts >= TunnelService.MAX_RECONNECT_ATTEMPTS) {
+      this.logger(
+        `Tunnel reconnect: giving up after ${TunnelService.MAX_RECONNECT_ATTEMPTS} attempts. Restart poke-code to try again.`,
+      );
+      return;
     }
+    const delayMs = Math.min(2000 * 2 ** this.reconnectAttempts, 30_000);
+    this.reconnectAttempts++;
+    this.logger(
+      `Tunnel disconnected. Reconnecting in ${Math.round(delayMs / 1000)}s… (attempt ${this.reconnectAttempts}/${TunnelService.MAX_RECONNECT_ATTEMPTS})`,
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (this.stopRequested) return;
+      const t = this.activeToken;
+      if (!t) return;
+      this.startTunnelOnce(t, { isReconnect: true }).then(
+        () => {
+          this.reconnectAttempts = 0;
+        },
+        (e: unknown) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg === "AUTH_INVALID") {
+            this.logger("Tunnel reconnect failed: login token rejected. Restart poke-code to log in again.");
+            return;
+          }
+          this.logger(`Tunnel reconnect attempt failed (${msg}). Retrying…`);
+          this.scheduleReconnect();
+        },
+      );
+    }, delayMs);
   }
 
   async stop(): Promise<void> {
+    // User-initiated stop: never reconnect afterwards.
+    this.stopRequested = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.reconnectAttempts = 0;
     try {
       await this.tunnel?.stop();
     } catch {

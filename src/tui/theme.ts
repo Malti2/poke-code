@@ -6,6 +6,7 @@ export const theme = {
   assistant: "white",
   tool: "yellow",
   success: "green",
+  warning: "yellow",
   error: "red",
   dim: "gray",
   faint: "gray",

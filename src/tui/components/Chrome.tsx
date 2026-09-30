@@ -18,15 +18,18 @@ export function Header({ cwd }: { cwd: string }) {
 
 export function StatusBar({
   connected,
+  reconnecting,
   permissionMode,
 }: {
   connected: boolean;
+  reconnecting?: boolean;
   permissionMode: string;
 }) {
+  const label = connected ? "connected" : reconnecting ? "reconnecting…" : "disconnected";
   return (
     <Box marginTop={1}>
-      <Text color={connected ? theme.success : theme.error}>{connected ? "●" : "○"}</Text>
-      <Text color={theme.dim}> poke {connected ? "connected" : "disconnected"}</Text>
+      <Text color={connected ? theme.success : reconnecting ? theme.warning : theme.error}>{connected ? "●" : reconnecting ? "◌" : "○"}</Text>
+      <Text color={theme.dim}> poke {label}</Text>
       <Text color={theme.faint}> · </Text>
       <Text color={theme.dim}>{permissionMode} mode</Text>
       <Text color={theme.faint}> · </Text>
