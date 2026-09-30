@@ -88,6 +88,9 @@ fi
 # 4. Project dependencies + 5. link binary onto PATH
 echo "Installing project dependencies..."
 (cd "$DEST" && bun install)
+# The linked binary is executed directly via its shebang, so it needs the
+# exec bit (git does not always preserve it, e.g. after API pushes).
+chmod +x "$DEST/src/main.tsx"
 echo "Linking the poke-code binary..."
 (cd "$DEST" && bun link)
 
@@ -96,10 +99,11 @@ export PATH="$HOME/.bun/bin:$PATH"
 # 6. Start (first start runs the API-key onboarding)
 echo ""
 echo "Done!"
-if have poke-code; then
+if have poke-code && poke-code --version >/dev/null 2>&1; then
   echo "Starting poke-code..."
   poke-code
 else
-  echo "'poke-code' is not on PATH in this shell yet (open a new terminal next time)."
+  echo "'poke-code' binary did not start cleanly - launching via bun directly instead."
+  echo "(If this keeps happening, re-run this installer after 'git pull'.)"
   bun "$DEST/src/main.tsx"
 fi

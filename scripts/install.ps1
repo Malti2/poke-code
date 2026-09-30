@@ -76,13 +76,17 @@ try {
 Refresh-Path
 
 # 6. Start (first start runs the API-key onboarding)
-Write-Host ""
+Write-Host "" 
 Write-Host "Done!" -ForegroundColor Green
+$pokeCodeWorks = $false
 if (Has-Command "poke-code") {
+  try { & poke-code --version | Out-Null; $pokeCodeWorks = ($LASTEXITCODE -eq 0) } catch { $pokeCodeWorks = $false }
+}
+if ($pokeCodeWorks) {
   Write-Host "Starting poke-code..."
   & poke-code
 } else {
-  Write-Host "'poke-code' is not on PATH in this window yet."
-  Write-Host "Starting it directly instead (open a new terminal next time)..."
+  Write-Host "'poke-code' binary did not start cleanly - launching via bun directly instead."
+  Write-Host "(If this keeps happening, re-run this installer after 'git pull'.)"
   & bun (Join-Path $Dest "src/main.tsx")
 }
