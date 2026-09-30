@@ -5,6 +5,8 @@ import { TunnelService } from "./services/tunnel";
 import { AgentSession, DEFAULT_REPLY_TIMEOUT_MS } from "./agent/session";
 import { PokeClient } from "./poke/client";
 import { App } from "./tui/App";
+import { runOnboarding } from "./tui/Onboarding";
+import { runSetup } from "./setup";
 import {
   getConfigValue,
   loadConfig,
@@ -35,6 +37,14 @@ program
     await tunnel.connect(token);
     console.log("Tunnel connected. Press Ctrl+C to stop.");
     await new Promise(() => {});
+  });
+
+program
+  .command("setup")
+  .description("Check dependencies and install what's missing (per OS)")
+  .action(async () => {
+    const ok = await runSetup();
+    process.exit(ok ? 0 : 1);
   });
 
 const configCmd = program.command("config").description("Manage poke-code configuration");
@@ -85,15 +95,25 @@ program.action(async () => {
 
   // TUI mode: require a key up front (env or config). The login device flow
   // prints to the console, which would corrupt the Ink UI, so we guide the
-  // user to set the key first instead.
+  // user through onboarding instead.
   const client = new PokeClient();
   if (!client.hasApiKey()) {
-    console.error("No Poke API key found.");
-    console.error("");
-    console.error("Get a V2 API key at https://poke.com/kitchen/api-keys, then run:");
-    console.error("  poke-code config set apiKey <your-key>");
-    console.error("or export POKE_API_KEY=<your-key>");
-    process.exit(1);
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      const ok = await runOnboarding();
+      if (!ok) {
+        console.error("No API key saved. Run `poke-code` again when you're ready,");
+        console.error("or set one manually: poke-code config set apiKey <your-key>");
+        process.exit(1);
+      }
+      console.log("API key saved. Starting poke-code…");
+    } else {
+      console.error("No Poke API key found.");
+      console.error("");
+      console.error("Get a V2 API key at https://poke.com/kitchen/api-keys, then run:");
+      console.error("  poke-code config set apiKey <your-key>");
+      console.error("or export POKE_API_KEY=<your-key>");
+      process.exit(1);
+    }
   }
   render(<App />);
 });

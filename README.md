@@ -30,25 +30,40 @@ in `~/.config/poke-code` on all platforms.
 
 ## Install
 
+One command, everything automatic (installs Bun and git if missing, clones the
+repo, runs `bun install`, links the `poke-code` binary onto your PATH):
+
+**Windows** (PowerShell):
+
+```powershell
+powershell -c "irm https://raw.githubusercontent.com/Malti2/poke-code/main/scripts/install.ps1 | iex"
+```
+
+**macOS / Linux**:
+
 ```sh
-git clone <this-repo>
+curl -fsSL https://raw.githubusercontent.com/Malti2/poke-code/main/scripts/install.sh -o /tmp/pc-install.sh && sh /tmp/pc-install.sh
+```
+
+Prefer doing it by hand?
+
+```sh
+git clone https://github.com/Malti2/poke-code.git
 cd poke-code
 bun install
+bun link   # puts `poke-code` on your PATH
 ```
 
-Optional: link the binary so `poke-code` works everywhere:
-
-```sh
-bun link
-```
+Missing something later? `poke-code setup` re-checks dependencies and offers
+to install what's missing (per OS).
 
 ## Configuration
 
-On first start (without a key) poke-code prints setup instructions instead of
-starting the UI.
+On first start poke-code runs a short onboarding: paste your V2 API key
+(input is hidden), it's validated and saved — no manual config needed.
 
 ```sh
-# Store your V2 API key (written with 0600 permissions)
+# …or set it manually (written with 0600 permissions)
 poke-code config set apiKey <your-v2-key>
 
 # …or export it per-shell
